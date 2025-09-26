@@ -280,4 +280,3 @@ Enable detailed logging by setting `level: "DEBUG"` in `main_config.yaml`.
 
 ---
 
-**Built with ❤️ for the Paradex trading community**
