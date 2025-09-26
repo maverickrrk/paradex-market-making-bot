@@ -1,0 +1,59 @@
+# ==============================================================================
+# Main Bot Configuration
+# ==============================================================================
+# This file defines the operational parameters for the market making bot.
+# It specifies which wallets trade on which markets and with what strategy settings.
+
+# --- General Bot Settings ---
+logging:
+  level: "INFO"  # The logging level for the console and log files.
+                 # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  directory: "logs" # Directory to store log files.
+
+# --- Trading Tasks ---
+# This is a list of all concurrent trading tasks the bot will run.
+# The bot will create a separate, independent trader for each item in this list.
+#
+# - wallet_name: Must match a 'wallet_name' in your config/wallets.csv file.
+# - market_symbol: The Paradex market symbol (e.g., "BTC-USD-PERP").
+# - strategy_name: The strategy to use. Must match a strategy class in the src/strategies/ folder.
+# - strategy_params: A dictionary of parameters to tune the strategy's behavior.
+#
+tasks:
+  - wallet_name: "FARMER_001"
+    market_symbol: "BTC-USD-PERP"
+    strategy_name: "vamp_mm" # Volume-Adjusted Mid-Price Market Maker
+    strategy_params:
+      order_value: 200        # Desired notional value (in USD) for each order.
+      base_spread_bps: 6      # Base bid-ask spread in basis points (1 bps = 0.01%).
+      inventory_skew_bps: 4   # How many bps to widen the spread per unit of inventory skew.
+      refresh_frequency_ms: 250 # How often to re-evaluate and update quotes (in milliseconds).
+
+  - wallet_name: "FARMER_002"
+    market_symbol: "ETH-USD-PERP"
+    strategy_name: "vamp_mm"
+    strategy_params:
+      order_value: 100
+      base_spread_bps: 8
+      inventory_skew_bps: 5
+      refresh_frequency_ms: 300
+
+  - wallet_name: "FARMER_001" # The same wallet can trade on multiple markets.
+    market_symbol: "ETH-USD-PERP"
+    strategy_name: "vamp_mm"
+    strategy_params:
+      order_value: 150
+      base_spread_bps: 9
+      inventory_skew_bps: 6
+      refresh_frequency_ms: 400
+
+# You can add more tasks for up to 50 wallets or more. For example:
+#
+#  - wallet_name: "FARMER_003"
+#    market_symbol: "BTC-USD-PERP"
+#    strategy_name: "vamp_mm"
+#    strategy_params:
+#      order_value: 250
+#      base_spread_bps: 5
+#      inventory_skew_bps: 3
+#      refresh_frequency_ms: 200

@@ -1,0 +1,75 @@
+# --- Security: Critical files to ignore ---
+# Ignore environment files containing sensitive keys
+*.env
+.env
+
+# Ignore the CSV file containing all wallet credentials.
+# THIS IS THE MOST IMPORTANT LINE IN THIS FILE.
+config/wallets.csv
+
+
+# --- Python specific ---
+# Byte-compiled / optimized / C extensions
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+paradex_mm_env/
+
+
+# --- Logs and Data ---
+# Log files
+logs/
+*.log
+*.log.*
+
+# Runtime data
+*.sqlite3
+*.db
+
+
+# --- IDE / Editor Configuration ---
+# PyCharm
+.idea/
+
+# VSCode
+.vscode/
+
+# SublimeText
+*.sublime-project
+*.sublime-workspace
+
+# MacOS
+.DS_Store
+
+
+# --- Testing ---
+.pytest_cache/
+.coverage
+.tox/

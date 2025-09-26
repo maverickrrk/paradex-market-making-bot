@@ -1,0 +1,24 @@
+# --- Core Frameworks ---
+# The primary library for HFT strategies, OMS, and exchange connections
+quantpylib
+
+# Official Paradex Python client for authentication and direct API interaction
+paradex-py
+
+# --- Configuration & Environment ---
+# For loading environment variables from a .env file (e.g., API keys)
+python-dotenv
+
+# For parsing the YAML configuration files (main_config.yaml)
+PyYAML
+
+# --- Data Handling ---
+# quantpylib and other data analysis tasks rely heavily on pandas
+pandas
+
+# Foundational package for numerical operations, used by quantpylib
+numpy
+
+# --- Asynchronous Networking ---
+# Used by quantpylib for WebSocket connections
+websockets
