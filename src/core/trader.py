@@ -43,8 +43,9 @@ class Trader:
         self.logger = logging.getLogger(f"Trader.{wallet_name}.{market_symbol}")
         
         # Each trader gets its own independent OMS and Feed
-        self.oms = OMS(gateway=self.gateway, exchanges=['paradex'], account=self.wallet_name)
-        self.feed = Feed(gateway=self.gateway, account=self.wallet_name)
+        # Note: Currently using single wallet gateway configuration
+        self.oms = OMS(gateway=self.gateway, exchanges=['paradex'])
+        self.feed = Feed(gateway=self.gateway)
 
         self._is_running = False
         self._main_task = None

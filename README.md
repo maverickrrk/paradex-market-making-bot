@@ -88,7 +88,12 @@ pip install --no-deps paradex-py
 
 # Install utility packages
 pip install python-dotenv PyYAML
+
+# IMPORTANT: Fix quantpylib bug (required for new installations)
+python fix_quantpylib.py
 ```
+
+**⚠️ Critical Note**: The `fix_quantpylib.py` script fixes a known bug in the quantpylib library. You **must** run this after every fresh installation.
 
 ## 🔧 Configuration
 
@@ -230,6 +235,18 @@ The `.gitignore` file automatically excludes:
 pip uninstall paradex-py quantpylib
 pip install git+https://github.com/sumitabh1710/quantpylib.git
 pip install --no-deps paradex-py
+python fix_quantpylib.py  # Don't forget this!
+```
+
+**quantpylib Import Error (`bars` not defined)**
+```bash
+# If you see: NameError: name 'bars' is not defined
+# Run the fix script:
+python fix_quantpylib.py
+
+# Or apply manually if script fails:
+# Edit: venv/Lib/site-packages/quantpylib/hft/feed.py
+# Change line 663: bar_cls=bars.TimeBars, → bar_cls=None,
 ```
 
 **Configuration Errors**

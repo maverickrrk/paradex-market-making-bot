@@ -2,12 +2,22 @@ import asyncio
 import logging
 from typing import Dict, Any, List
 
-from src.utils.config_loader import load_main_config, load_wallets, load_env_vars, ConfigError
-from src.utils.logger import setup_logger
-from src.core.gateway_manager import GatewayManager
-from src.core.trader import Trader
-from src.strategies.base_strategy import BaseStrategy
-from src.strategies.vamp_mm import VampMM
+try:
+    # Try absolute imports first (when running as module from project root)
+    from src.utils.config_loader import load_main_config, load_wallets, load_env_vars, ConfigError
+    from src.utils.logger import setup_logger
+    from src.core.gateway_manager import GatewayManager
+    from src.core.trader import Trader
+    from src.strategies.base_strategy import BaseStrategy
+    from src.strategies.vamp_mm import VampMM
+except ImportError:
+    # Fall back to relative imports (when running from src directory)
+    from utils.config_loader import load_main_config, load_wallets, load_env_vars, ConfigError
+    from utils.logger import setup_logger
+    from core.gateway_manager import GatewayManager
+    from core.trader import Trader
+    from strategies.base_strategy import BaseStrategy
+    from strategies.vamp_mm import VampMM
 
 # --- Strategy Mapping ---
 # This dictionary maps the 'strategy_name' from the config file to the actual

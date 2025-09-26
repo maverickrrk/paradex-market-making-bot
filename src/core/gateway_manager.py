@@ -44,19 +44,22 @@ class GatewayManager:
         self.logger.info(f"Initializing master gateway for {len(self.wallets)} wallet(s) on '{self.paradex_env}'...")
 
         # quantpylib's Gateway needs a specific dictionary format.
-        # We will pass all our wallet keys under the 'paradex' exchange key.
-        # The 'account' field in each key dictionary allows quantpylib to
-        # distinguish between them.
+        # For Paradex, we need to pass the configuration in the format expected by the Paradex wrapper.
+        # Since we have multiple wallets, we'll use the first wallet for now and handle multi-wallet later.
+        # TODO: Implement proper multi-wallet support in quantpylib Gateway
+        
+        if not self.wallets:
+            raise ValueError("No wallets configured")
+            
+        # Use the first wallet for the gateway configuration
+        first_wallet_name = list(self.wallets.keys())[0]
+        first_wallet_creds = self.wallets[first_wallet_name]
+        
         config_keys = {
-            "paradex": [
-                {
-                    "account": wallet_name,
-                    "l1_private_key": creds["l1_private_key"],
-                    "l1_address": creds["l1_address"],
-                    "env": self.paradex_env,
-                }
-                for wallet_name, creds in self.wallets.items()
-            ]
+            "paradex": {
+                "key": first_wallet_creds["l1_address"],
+                "secret": first_wallet_creds["l1_private_key"],
+            }
         }
         
         try:
