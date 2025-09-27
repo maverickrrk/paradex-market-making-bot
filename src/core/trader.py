@@ -52,6 +52,21 @@ class Trader:
     async def _lob_handler(self, lob_data: CustomLOB):
         """Async handler to process incoming L2 order book updates."""
         self._latest_lob = lob_data
+        
+        # Log raw order book data
+        if not lob_data.is_empty():
+            best_bid = lob_data.best_bid()
+            best_ask = lob_data.best_ask()
+            if best_bid and best_ask:
+                mid = (best_bid[0] + best_ask[0]) / 2
+                spread = best_ask[0] - best_bid[0]
+                spread_bps = (spread / mid) * 10000
+                
+                self.logger.info(f"📊 RAW ORDER BOOK - {self.market_symbol}")
+                self.logger.info(f"   🔵 Best Bid: ${best_bid[0]:.2f} @ {best_bid[1]:.4f}")
+                self.logger.info(f"   🔴 Best Ask: ${best_ask[0]:.2f} @ {best_ask[1]:.4f}")
+                self.logger.info(f"   💰 Mid: ${mid:.2f} | Spread: {spread_bps:.2f} bps")
+                self.logger.info(f"   📊 Bids: {len(lob_data.bids)} levels | Asks: {len(lob_data.asks)} levels")
 
     async def run(self):
         """
@@ -126,6 +141,23 @@ class Trader:
             # 3. Execute the new quotes
             if quotes:
                 bid_price, bid_size, ask_price, ask_size = quotes
+                
+                # Calculate mid price
+                mid_price = (bid_price + ask_price) / 2
+                spread = ask_price - bid_price
+                spread_bps = (spread / mid_price) * 10000
+                
+                # Print detailed market and order information
+                self.logger.info("=" * 60)
+                self.logger.info(f"📊 MARKET DATA - {self.market_symbol}")
+                self.logger.info(f"   💰 Mid Price: ${mid_price:.2f}")
+                self.logger.info(f"   📈 Bid: ${bid_price:.2f} @ {bid_size:.4f}")
+                self.logger.info(f"   📉 Ask: ${ask_price:.2f} @ {ask_size:.4f}")
+                self.logger.info(f"   📏 Spread: ${spread:.2f} ({spread_bps:.2f} bps)")
+                self.logger.info(f"   💼 Position: {current_position:.4f}")
+                self.logger.info(f"   💵 Balance: ${account_balance:.2f}")
+                self.logger.info("=" * 60)
+                
                 await self._update_quotes(bid_price, bid_size, ask_price, ask_size)
             else:
                 # If strategy returns None, it means we should not quote.
@@ -175,19 +207,26 @@ class Trader:
 
         # Place new orders if needed
         if place_new_bid:
+            self.logger.info(f"🟢 PLACING BID ORDER: {bid_size:.4f} {self.market_symbol} @ ${bid_price:.2f}")
             tasks.append(self.oms.limit_order(
                 exc='paradex', ticker=self.market_symbol, amount=bid_size, price=bid_price, post_only=True
             ))
         if place_new_ask:
+            self.logger.info(f"🔴 PLACING ASK ORDER: {ask_size:.4f} {self.market_symbol} @ ${ask_price:.2f}")
             tasks.append(self.oms.limit_order(
                 exc='paradex', ticker=self.market_symbol, amount=-ask_size, price=ask_price, post_only=True
             ))
 
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            for res in results:
+            for i, res in enumerate(results):
                 if isinstance(res, Exception):
-                    self.logger.error(f"Error during order update operation: {res}")
+                    self.logger.error(f"❌ Error executing order operation: {res}")
+                else:
+                    if i < len(orders_to_cancel):
+                        self.logger.info(f"✅ Order cancelled successfully")
+                    else:
+                        self.logger.info(f"✅ Order placed successfully: {res}")
 
 
     async def _cancel_all_market_orders(self):

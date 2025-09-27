@@ -32,6 +32,18 @@ class CustomLOB:
             return (best_bid + best_ask) / 2
         return None
         
+    def best_bid(self) -> Optional[List[float]]:
+        """Get best bid [price, size]."""
+        if self.bids:
+            return [self.bids[0]["price"], self.bids[0]["size"]]
+        return None
+        
+    def best_ask(self) -> Optional[List[float]]:
+        """Get best ask [price, size]."""
+        if self.asks:
+            return [self.asks[0]["price"], self.asks[0]["size"]]
+        return None
+        
     def get_vamp(self, notional: float) -> Optional[float]:
         """
         Get Volume-Adjusted Mid-Price (VAMP).
@@ -133,19 +145,27 @@ class CustomFeed:
             
     async def _poll_orderbook(self, ticker: str):
         """Poll order book data for a ticker."""
+        self.logger.info(f"🔄 Starting order book polling for {ticker}")
+        
         while self.running:
             try:
                 # Get order book data from exchange
+                self.logger.debug(f"📡 Fetching order book data for {ticker}...")
                 orderbook_data = await self.gateway.get_orderbook(ticker)
                 
                 if orderbook_data and "bids" in orderbook_data and "asks" in orderbook_data:
+                    self.logger.info(f"📊 Received order book data for {ticker}: {len(orderbook_data['bids'])} bids, {len(orderbook_data['asks'])} asks")
+                    
                     # Update LOB data
                     if ticker in self.lob_data:
                         self.lob_data[ticker].update(orderbook_data)
                         
                         # Call handler
                         if ticker in self.lob_handlers:
+                            self.logger.debug(f"📞 Calling LOB handler for {ticker}")
                             await self.lob_handlers[ticker](self.lob_data[ticker])
+                else:
+                    self.logger.warning(f"⚠️ No valid order book data received for {ticker}: {orderbook_data}")
                         
                 # Wait before next poll
                 await asyncio.sleep(1.0)  # Poll every second

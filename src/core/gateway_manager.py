@@ -63,7 +63,7 @@ class GatewayManager:
         }
         
         try:
-            GatewayManager._gateway_instance = CustomGateway(config_keys=config_keys)
+            GatewayManager._gateway_instance = CustomGateway(config_keys=config_keys, paradex_env=self.paradex_env)
             await GatewayManager._gateway_instance.init_clients()
             self.is_initialized = True
             self.logger.info("Master gateway initialization successful.")

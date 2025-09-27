@@ -13,6 +13,7 @@ class Order:
     def __init__(self, order_id: str, symbol: str, side: str, amount: float, 
                  price: float, status: str = "open"):
         self.order_id = order_id
+        self.cloid = order_id  # Client order ID (same as order_id for simplicity)
         self.symbol = symbol
         self.side = side
         self.amount = amount
