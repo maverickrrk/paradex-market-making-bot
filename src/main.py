@@ -2,6 +2,13 @@ import asyncio
 import logging
 from typing import Dict, Any, List
 
+# Configure logging for the main script
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(levelname)s:%(name)s:%(message)s',
+    force=True  # Override any existing configuration
+)
+
 try:
     # Try absolute imports first (when running as module from project root)
     from src.utils.config_loader import load_main_config, load_wallets, load_env_vars, ConfigError

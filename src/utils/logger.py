@@ -58,9 +58,13 @@ def setup_logger(name: str, log_level: str, log_dir: str) -> logging.Logger:
     # Set the logging level from the configuration
     level = getattr(logging, log_level.upper(), logging.INFO)
     logger.setLevel(level)
+    
+    # Set root logger level to ensure all child loggers inherit it
+    logging.getLogger().setLevel(level)
 
     # --- Console Handler ---
     console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(level)  # Set console handler to same level as logger
     console_handler.setFormatter(ColorFormatter())
     logger.addHandler(console_handler)
 
@@ -77,7 +81,7 @@ def setup_logger(name: str, log_level: str, log_dir: str) -> logging.Logger:
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
     
-    # Prevent logs from being propagated to the root logger
-    logger.propagate = False
+    # Allow logs to propagate to the root logger so child loggers inherit the level
+    logger.propagate = True
 
     return logger
