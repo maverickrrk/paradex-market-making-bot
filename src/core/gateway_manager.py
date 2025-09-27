@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, Any
 
-from quantpylib.gateway.master import Gateway
+from .custom_gateway import CustomGateway
 
 class GatewayManager:
     """
@@ -12,7 +12,7 @@ class GatewayManager:
     It is responsible for initializing the connection to Paradex with all
     the wallet credentials provided and for gracefully shutting it down.
     """
-    _gateway_instance: Gateway = None
+    _gateway_instance: CustomGateway = None
 
     def __init__(self, wallets: Dict[str, Dict[str, str]], paradex_env: str):
         """
@@ -63,7 +63,7 @@ class GatewayManager:
         }
         
         try:
-            GatewayManager._gateway_instance = Gateway(config_keys=config_keys)
+            GatewayManager._gateway_instance = CustomGateway(config_keys=config_keys)
             await GatewayManager._gateway_instance.init_clients()
             self.is_initialized = True
             self.logger.info("Master gateway initialization successful.")
@@ -71,12 +71,12 @@ class GatewayManager:
             self.logger.critical(f"Failed to initialize master gateway: {e}", exc_info=True)
             raise
 
-    def get_gateway(self) -> Gateway:
+    def get_gateway(self) -> CustomGateway:
         """
         Provides access to the shared Gateway instance.
 
         Returns:
-            The initialized Gateway object.
+            The initialized CustomGateway object.
 
         Raises:
             RuntimeError: If the gateway has not been initialized yet.

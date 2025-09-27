@@ -2,10 +2,9 @@ import asyncio
 import logging
 from typing import Dict, Any
 
-from quantpylib.gateway.master import Gateway
-from quantpylib.hft.oms import OMS
-from quantpylib.hft.feed import Feed
-from quantpylib.hft.lob import LOB
+from .custom_gateway import CustomGateway
+from .custom_oms import CustomOMS
+from .custom_feed import CustomFeed, CustomLOB
 
 from src.strategies.base_strategy import BaseStrategy
 
@@ -21,7 +20,7 @@ class Trader:
         wallet_name: str,
         market_symbol: str,
         strategy: BaseStrategy,
-        gateway: Gateway,
+        gateway: CustomGateway,
         refresh_frequency_ms: int
     ):
         """
@@ -43,15 +42,14 @@ class Trader:
         self.logger = logging.getLogger(f"Trader.{wallet_name}.{market_symbol}")
         
         # Each trader gets its own independent OMS and Feed
-        # Note: Currently using single wallet gateway configuration
-        self.oms = OMS(gateway=self.gateway, exchanges=['paradex'])
-        self.feed = Feed(gateway=self.gateway)
+        self.oms = CustomOMS(gateway=self.gateway)
+        self.feed = CustomFeed(gateway=self.gateway)
 
         self._is_running = False
         self._main_task = None
         self._latest_lob = None
 
-    async def _lob_handler(self, lob_data: LOB):
+    async def _lob_handler(self, lob_data: CustomLOB):
         """Async handler to process incoming L2 order book updates."""
         self._latest_lob = lob_data
 
@@ -71,6 +69,9 @@ class Trader:
             await self.oms.init()
             self.logger.info("OMS initialized successfully.")
 
+            # Start the feed
+            self.feed.start()
+            
             # Subscribe to the L2 order book feed for the market
             await self.feed.add_l2_book_feed(
                 exc='paradex',
