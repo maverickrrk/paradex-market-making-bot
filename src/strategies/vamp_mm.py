@@ -73,7 +73,8 @@ class VampMM(BaseStrategy):
         inventory_skew_bps = self.get_param("inventory_skew_bps")
         
         # Calculate our current inventory notional value
-        inventory_notional = current_position * vamp_price
+        # Convert current_position to float to handle Decimal types from OMS
+        inventory_notional = float(current_position) * vamp_price
 
         # The skew factor pushes our price to encourage trades that reduce our inventory.
         # It's scaled by the ratio of our current inventory to our standard order size.
@@ -110,6 +111,14 @@ class VampMM(BaseStrategy):
         # Calculate the size in the base asset based on our target notional value.
         bid_size = reference_notional / bid_price
         ask_size = reference_notional / ask_price
+        
+        # --- 6. Round prices AND SIZES to match exchange requirements ---
+        # Paradex requires prices to be rounded to exactly 2 decimal places
+        # and amounts (sizes) to be rounded to exactly 4 decimal places
+        bid_price = round(bid_price, 2)
+        ask_price = round(ask_price, 2)
+        bid_size = round(bid_size, 4)
+        ask_size = round(ask_size, 4)
         
         self.logger.debug(
             f"Pos: {current_position:.4f} | "

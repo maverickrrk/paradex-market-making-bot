@@ -146,18 +146,18 @@ class Trader:
 
         # Get current open orders for this market
         live_orders = self.oms.orders_peek(exc='paradex')
-        market_orders = [o for o in live_orders.get_all_orders() if o.ticker == self.market_symbol]
+        market_orders = live_orders.get_orders(ticker=self.market_symbol)
 
         for order in market_orders:
-            # Check bids
-            if order.is_buy():
-                if abs(order.price - bid_price) < 1e-9: # Compare floats safely
+            # Check bids (positive amount = buy order)
+            if float(order.amount) > 0:
+                if abs(float(order.price) - bid_price) < 1e-9: # Compare floats safely
                     place_new_bid = False # Desired bid already exists
                 else:
                     orders_to_cancel.append(order)
-            # Check asks
+            # Check asks (negative amount = sell order)
             else:
-                if abs(order.price - ask_price) < 1e-9:
+                if abs(float(order.price) - ask_price) < 1e-9:
                     place_new_ask = False # Desired ask already exists
                 else:
                     orders_to_cancel.append(order)
@@ -166,7 +166,8 @@ class Trader:
         tasks = []
         # Cancel stale orders
         for order in orders_to_cancel:
-            self.logger.info(f"Cancelling stale order: {order.side} {order.amount} @ {order.price}")
+            side = "BUY" if float(order.amount) > 0 else "SELL"
+            self.logger.info(f"Cancelling stale order: {side} {order.amount} @ {order.price}")
             tasks.append(self.oms.cancel_order(
                 exc='paradex', ticker=self.market_symbol, cloid=order.cloid
             ))

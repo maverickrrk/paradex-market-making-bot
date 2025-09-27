@@ -89,11 +89,11 @@ pip install --no-deps paradex-py
 # Install utility packages
 pip install python-dotenv PyYAML
 
-# IMPORTANT: Fix quantpylib bug (required for new installations)
+# IMPORTANT: Fix quantpylib compatibility issues (required for new installations)
 python fix_quantpylib.py
 ```
 
-**⚠️ Critical Note**: The `fix_quantpylib.py` script fixes a known bug in the quantpylib library. You **must** run this after every fresh installation.
+**⚠️ Critical Note**: The `fix_quantpylib.py` script fixes ALL known compatibility issues between quantpylib and this bot. You **must** run this after every fresh installation. It fixes 4 critical bugs that prevent the bot from working.
 
 ## 🔧 Configuration
 

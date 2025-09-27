@@ -3,6 +3,7 @@ import csv
 import os
 from typing import Dict, List, Any
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Define a custom exception for better error handling
 class ConfigError(Exception):
@@ -120,7 +121,17 @@ def load_env_vars() -> Dict[str, str]:
     Raises:
         ConfigError: If the required PARADEX_ENV variable is not set.
     """
-    load_dotenv()
+    # Force loading .env from the project root directory
+    project_root = Path(__file__).parent.parent.parent
+    dotenv_path = project_root / '.env'
+    
+    if not dotenv_path.exists():
+        raise ConfigError(
+            f"The .env file was not found at the expected location: {dotenv_path}"
+        )
+        
+    load_dotenv(dotenv_path=dotenv_path)
+    
     paradex_env = os.getenv("PARADEX_ENV")
     
     if not paradex_env:
@@ -128,5 +139,8 @@ def load_env_vars() -> Dict[str, str]:
             "The 'PARADEX_ENV' environment variable is not set. "
             "Please create a .env file and set PARADEX_ENV to 'testnet' or 'mainnet'."
         )
+    
+    # Add a print statement for definitive proof
+    print(f"--- Successfully loaded environment: PARADEX_ENV = {paradex_env} ---")
     
     return {"PARADEX_ENV": paradex_env}
