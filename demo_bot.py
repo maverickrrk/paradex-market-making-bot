@@ -119,7 +119,8 @@ async def run_demo_bot():
     
     async def lob_handler(lob_data):
         """Handle order book updates."""
-        lob.update(lob_data)
+        # The LOB data is already updated by the feed
+        pass
         
     await feed.add_l2_book_feed("paradex", market_symbol, lob_handler)
     
@@ -130,14 +131,16 @@ async def run_demo_bot():
     try:
         # Run for 30 seconds to demonstrate
         for i in range(30):
-            if not lob.is_empty():
+            # Get the LOB data from the feed
+            if market_symbol in feed.lob_data and not feed.lob_data[market_symbol].is_empty():
+                current_lob = feed.lob_data[market_symbol]
                 # Get current position
                 positions = oms.positions_peek("paradex")
                 current_position = positions.get_ticker_amount(market_symbol)
                 
                 # Generate quotes
                 quotes = strategy.compute_quotes(
-                    lob_data=lob,
+                    lob_data=current_lob,
                     current_position=current_position,
                     account_balance=10000.0
                 )

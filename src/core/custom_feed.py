@@ -140,11 +140,12 @@ class CustomFeed:
                 
                 if orderbook_data and "bids" in orderbook_data and "asks" in orderbook_data:
                     # Update LOB data
-                    self.lob_data[ticker].update(orderbook_data)
-                    
-                    # Call handler
-                    if ticker in self.lob_handlers:
-                        await self.lob_handlers[ticker](self.lob_data[ticker])
+                    if ticker in self.lob_data:
+                        self.lob_data[ticker].update(orderbook_data)
+                        
+                        # Call handler
+                        if ticker in self.lob_handlers:
+                            await self.lob_handlers[ticker](self.lob_data[ticker])
                         
                 # Wait before next poll
                 await asyncio.sleep(1.0)  # Poll every second
