@@ -1,7 +1,9 @@
+# FILE: src/strategies/vamp_mm.py
+
 from typing import Dict, Any, Tuple, Optional
 import numpy as np
 
-from .base_strategy import BaseStrategy, LOB
+from .base_strategy import BaseStrategy
 
 class VampMM(BaseStrategy):
     """
@@ -35,7 +37,7 @@ class VampMM(BaseStrategy):
 
     def compute_quotes(
         self, 
-        lob_data: LOB, 
+        lob_data: Any, # Expects a SimpleLOB object from the Trader 
         current_position: float, 
         account_balance: float
     ) -> Optional[Tuple[float, float, float, float]]:
@@ -43,9 +45,9 @@ class VampMM(BaseStrategy):
         Calculates bid and ask quotes based on the VAMP logic.
 
         Args:
-            lob_data: The current limit order book state.
+            lob_data: The current limit order book state (SimpleLOB object).
             current_position: The bot's current position in the base asset.
-            account_balance: The account's total equity.
+            account_balance: The account's total equity (not used by this strategy).
 
         Returns:
             A tuple of (bid_price, bid_size, ask_price, ask_size), or None if no
@@ -56,8 +58,6 @@ class VampMM(BaseStrategy):
             return None
 
         # --- 1. Calculate Reference Price (VAMP) ---
-        # We use the notional value of our desired order size to calculate the VAMP.
-        # This gives us a reference price that reflects the liquidity we intend to trade with.
         reference_notional = self.get_param("order_value")
         vamp_price = lob_data.get_vamp(reference_notional)
 
@@ -72,59 +72,51 @@ class VampMM(BaseStrategy):
         base_spread_bps = self.get_param("base_spread_bps")
         inventory_skew_bps = self.get_param("inventory_skew_bps")
         
-        # Calculate our current inventory notional value
-        # Convert current_position to float to handle Decimal types from OMS
         inventory_notional = float(current_position) * vamp_price
-
-        # The skew factor pushes our price to encourage trades that reduce our inventory.
-        # It's scaled by the ratio of our current inventory to our standard order size.
-        inventory_skew_ratio = inventory_notional / reference_notional
         
-        # Use tanh to create a smooth, bounded skew effect.
-        # As inventory grows, the skew approaches inventory_skew_bps but never exceeds it.
+        # Use tanh for a smooth, bounded skew effect.
+        inventory_skew_ratio = inventory_notional / reference_notional if reference_notional > 0 else 0
         skew_adjustment_bps = np.tanh(inventory_skew_ratio) * inventory_skew_bps
         
         # --- 3. Calculate Final Bid and Ask Prices ---
-        # Convert basis points to a decimal multiplier
         base_spread_multiplier = base_spread_bps / 10000.0
         skew_multiplier = skew_adjustment_bps / 10000.0
 
-        # The skew is subtracted from the mid-point price.
-        # If we are long (positive inventory), skew is positive, pushing both bid and ask down.
-        # If we are short (negative inventory), skew is negative, pushing both bid and ask up.
         adjusted_mid_price = vamp_price * (1 - skew_multiplier)
-        
         half_spread = vamp_price * (base_spread_multiplier / 2.0)
         
         bid_price = adjusted_mid_price - half_spread
         ask_price = adjusted_mid_price + half_spread
 
         # --- 4. Final Sanity Checks ---
-        # Ensure bid is lower than ask and both are positive.
         if bid_price <= 0 or ask_price <= 0 or bid_price >= ask_price:
             self.logger.warning(
-                f"Invalid quote calculation: bid={bid_price}, ask={ask_price}. Skipping."
+                f"Invalid quote calculation: bid={bid_price:.2f}, ask={ask_price:.2f}. Skipping."
             )
             return None
 
         # --- 5. Calculate Order Sizes ---
-        # Calculate the size in the base asset based on our target notional value.
         bid_size = reference_notional / bid_price
         ask_size = reference_notional / ask_price
         
-        # --- 6. Round prices AND SIZES to match exchange requirements ---
-        # Paradex requires prices to be rounded to exactly 2 decimal places
-        # and amounts (sizes) to be rounded to exactly 4 decimal places
+        # --- 6. Round prices and sizes to match exchange requirements ---
+        # Paradex prices are typically to 2 decimal places, sizes to 4.
+        # This can be market-specific, but is a safe default.
         bid_price = round(bid_price, 2)
         ask_price = round(ask_price, 2)
         bid_size = round(bid_size, 4)
         ask_size = round(ask_size, 4)
         
+        # Final check for minimum size after rounding
+        if bid_size <= 0 or ask_size <= 0:
+            self.logger.warning("Order size is zero after rounding. Check order_value and prices. Skipping.")
+            return None
+
         self.logger.debug(
             f"Pos: {current_position:.4f} | "
             f"VAMP: {vamp_price:.2f} | "
             f"Skew bps: {skew_adjustment_bps:.2f} | "
-            f"Quote: {bid_price:.2f} @ {bid_size:.4f} <-> {ask_price:.2f} @ {ask_size:.4f}"
+            f"Quote: {bid_size:.4f} @ {bid_price:.2f} <-> {ask_size:.4f} @ {ask_price:.2f}"
         )
 
         return bid_price, bid_size, ask_price, ask_size

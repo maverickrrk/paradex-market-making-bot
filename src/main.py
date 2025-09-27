@@ -1,38 +1,31 @@
+# FILE: src/main.py
+
 import asyncio
 import logging
-from typing import Dict, Any, List
+from typing import Dict, List, Type
 
-try:
-    # Try absolute imports first (when running as module from project root)
-    from src.utils.config_loader import load_main_config, load_wallets, load_env_vars, ConfigError
-    from src.utils.logger import setup_logger
-    from src.core.gateway_manager import GatewayManager
-    from src.core.trader import Trader
-    from src.strategies.base_strategy import BaseStrategy
-    from src.strategies.vamp_mm import VampMM
-except ImportError:
-    # Fall back to relative imports (when running from src directory)
-    from utils.config_loader import load_main_config, load_wallets, load_env_vars, ConfigError
-    from utils.logger import setup_logger
-    from core.gateway_manager import GatewayManager
-    from core.trader import Trader
-    from strategies.base_strategy import BaseStrategy
-    from strategies.vamp_mm import VampMM
+from src.utils.config_loader import load_main_config, load_wallets, load_env_vars, ConfigError
+from src.utils.logger import setup_logger
+from src.core.gateway_manager import ParadexClientManager
+from src.core.trader import Trader
+from src.strategies.base_strategy import BaseStrategy
+from src.strategies.vamp_mm import VampMM
 
 # --- Strategy Mapping ---
-# This dictionary maps the 'strategy_name' from the config file to the actual
-# strategy class. This allows for easy extension with new strategies.
-STRATEGY_CATALOG: Dict[str, BaseStrategy] = {
+# Maps 'strategy_name' from config to the actual strategy class.
+STRATEGY_CATALOG: Dict[str, Type[BaseStrategy]] = {
     "vamp_mm": VampMM,
 }
 
 class Orchestrator:
     """
     The main class that orchestrates the entire bot's lifecycle.
+    It loads configs, initializes a client manager for all wallets,
+    and launches an independent Trader task for each trading configuration.
     """
     def __init__(self):
         self.traders: List[Trader] = []
-        self.gateway_manager: GatewayManager = None
+        self.client_manager: ParadexClientManager = None
         self.logger: logging.Logger = None
 
     def _setup(self):
@@ -51,21 +44,21 @@ class Orchestrator:
                 log_dir=log_settings.get("directory", "logs"),
             )
             self.logger.info("Configuration loaded and logger initialized.")
+            self.logger.info(f"Loaded environment: PARADEX_ENV={self.env_vars['PARADEX_ENV']}")
 
-            # Initialize the GatewayManager with all wallets
-            self.gateway_manager = GatewayManager(
+            # Initialize the ParadexClientManager with all wallets
+            self.client_manager = ParadexClientManager(
                 wallets=self.wallets,
                 paradex_env=self.env_vars["PARADEX_ENV"]
             )
 
         except ConfigError as e:
-            # Use a basic logger for setup errors as the main one might not be ready
-            logging.basicConfig(level=logging.INFO)
+            logging.basicConfig(level=logging.INFO, format="[%(levelname)-8s] - %(message)s")
             logging.critical(f"Configuration Error: {e}")
-            exit(1) # Exit if configuration is invalid
+            exit(1)
         except Exception as e:
-            logging.basicConfig(level=logging.INFO)
-            logging.critical(f"A critical error occurred during setup: {e}")
+            logging.basicConfig(level=logging.INFO, format="[%(levelname)-8s] - %(message)s")
+            logging.critical(f"A critical error occurred during setup: {e}", exc_info=True)
             exit(1)
 
     async def run(self):
@@ -75,9 +68,8 @@ class Orchestrator:
         self._setup()
 
         try:
-            # Initialize the shared gateway connection
-            await self.gateway_manager.initialize()
-            gateway = self.gateway_manager.get_gateway()
+            # Initialize the shared client manager, which onboards all wallets
+            await self.client_manager.initialize()
             
             # --- Create and Prepare Trader Instances ---
             tasks_config = self.main_config.get("tasks", [])
@@ -102,19 +94,27 @@ class Orchestrator:
                     self.logger.error(f"Strategy '{strategy_name}' not found in STRATEGY_CATALOG. Skipping task.")
                     continue
 
-                # Instantiate the strategy
-                strategy_class = STRATEGY_CATALOG[strategy_name]
-                strategy_instance = strategy_class(strategy_params)
+                try:
+                    # Get the dedicated client for this wallet
+                    client_for_trader = self.client_manager.get_client(wallet_name)
+                    
+                    # Instantiate the strategy
+                    strategy_class = STRATEGY_CATALOG[strategy_name]
+                    strategy_instance = strategy_class(strategy_params)
 
-                # Create the Trader instance
-                trader = Trader(
-                    wallet_name=wallet_name,
-                    market_symbol=market,
-                    strategy=strategy_instance,
-                    gateway=gateway,
-                    refresh_frequency_ms=refresh_ms
-                )
-                self.traders.append(trader)
+                    # Create the Trader instance
+                    trader = Trader(
+                        wallet_name=wallet_name,
+                        market_symbol=market,
+                        strategy=strategy_instance,
+                        client=client_for_trader, # Pass the specific client
+                        refresh_frequency_ms=refresh_ms
+                    )
+                    self.traders.append(trader)
+                except (ValueError, RuntimeError) as e:
+                    self.logger.error(f"Could not create trader for '{wallet_name}' on '{market}'. Reason: {e}. Skipping task.")
+                    continue
+
 
             # --- Launch and Manage Trader Tasks ---
             if self.traders:
@@ -122,9 +122,7 @@ class Orchestrator:
                 trader_tasks = [asyncio.create_task(trader.run()) for trader in self.traders]
                 await asyncio.gather(*trader_tasks)
             else:
-                # If no valid traders, just wait indefinitely
-                await asyncio.Event().wait()
-
+                self.logger.warning("No valid traders were created. The bot will now exit.")
 
         except asyncio.CancelledError:
             self.logger.info("Main orchestrator task cancelled. Initiating shutdown...")
@@ -139,21 +137,20 @@ class Orchestrator:
         
         # Concurrently stop all trader tasks
         if self.traders:
-            await asyncio.gather(*(trader.stop() for trader in self.traders))
+            stop_tasks = [trader.stop() for trader in self.traders if trader._is_running]
+            await asyncio.gather(*stop_tasks, return_exceptions=True)
         
-        # Close the master gateway connection
-        if self.gateway_manager:
-            await self.gateway_manager.cleanup()
+        # Close all client connections via the manager
+        if self.client_manager:
+            await self.client_manager.cleanup()
             
         self.logger.info("Shutdown complete. Exiting.")
 
-
-async def main():
+async def main_entrypoint():
     """Main function to run the bot and handle graceful shutdown."""
     orchestrator = Orchestrator()
     
-    # This loop ensures that even if the main task exits, we can catch
-    # the shutdown signal (Ctrl+C) and clean up properly.
+    # Create the main task for the orchestrator
     main_task = asyncio.create_task(orchestrator.run())
 
     try:
@@ -162,9 +159,8 @@ async def main():
         # This is expected on Ctrl+C
         pass
 
-
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        asyncio.run(main_entrypoint())
     except KeyboardInterrupt:
         print("\nKeyboardInterrupt detected. Shutting down gracefully...")

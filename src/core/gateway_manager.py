@@ -1,99 +1,121 @@
+
+import asyncio
 import logging
-from typing import Dict, Any
+from typing import Dict
 
-from quantpylib.gateway.master import Gateway
+from paradex_py import Paradex
+from paradex_py.environment import TESTNET, PROD
 
-class GatewayManager:
+class ParadexClientManager:
     """
-    Manages a single, shared instance of the quantpylib Gateway.
+    Manages a collection of Paradex client instances, one for each wallet.
 
-    This class ensures that the entire application uses one Gateway object,
-    optimizing resource usage (e.g., connection pooling, rate limiting).
-    It is responsible for initializing the connection to Paradex with all
-    the wallet credentials provided and for gracefully shutting it down.
+    This class ensures that each wallet has a single, initialized Paradex client,
+    optimizing resource usage (e.g., connection pooling). It is responsible
+    for onboarding all wallets and gracefully shutting them down.
     """
-    _gateway_instance: Gateway = None
+    _clients: Dict[str, Paradex] = {}
+    is_initialized: bool = False
 
     def __init__(self, wallets: Dict[str, Dict[str, str]], paradex_env: str):
         """
-        Initializes the GatewayManager.
-
-        Note: This does not establish the connection. The `initialize` async
-        method must be called to do that.
+        Initializes the ParadexClientManager.
 
         Args:
             wallets: A dictionary of all wallets loaded from wallets.csv.
             paradex_env: The trading environment ('testnet' or 'mainnet').
         """
-        self.wallets = wallets
+        self.wallets_config = wallets
         self.paradex_env = paradex_env
-        self.is_initialized = False
         self.logger = logging.getLogger(self.__class__.__name__)
 
     async def initialize(self):
         """
-        Creates and initializes the master Gateway instance.
+        Creates and initializes a Paradex client for each configured wallet.
 
-        This method configures the Gateway with all provided wallet keys and
-        establishes the necessary connections to the exchange.
+        This method onboards all wallets concurrently to speed up the startup process.
         """
         if self.is_initialized:
-            self.logger.warning("Gateway is already initialized.")
+            self.logger.warning("ClientManager is already initialized.")
             return
 
-        self.logger.info(f"Initializing master gateway for {len(self.wallets)} wallet(s) on '{self.paradex_env}'...")
+        self.logger.info(f"Initializing {len(self.wallets_config)} wallet client(s) on '{self.paradex_env}'...")
+        env = TESTNET if self.paradex_env == "testnet" else PROD
 
-        # quantpylib's Gateway needs a specific dictionary format.
-        # For Paradex, we need to pass the configuration in the format expected by the Paradex wrapper.
-        # Since we have multiple wallets, we'll use the first wallet for now and handle multi-wallet later.
-        # TODO: Implement proper multi-wallet support in quantpylib Gateway
+        # Create tasks to onboard all wallets concurrently
+        onboarding_tasks = [
+            self._onboard_wallet(wallet_name, creds, env)
+            for wallet_name, creds in self.wallets_config.items()
+        ]
         
-        if not self.wallets:
-            raise ValueError("No wallets configured")
-            
-        # Use the first wallet for the gateway configuration
-        first_wallet_name = list(self.wallets.keys())[0]
-        first_wallet_creds = self.wallets[first_wallet_name]
+        results = await asyncio.gather(*onboarding_tasks, return_exceptions=True)
+
+        # Process results and check for failures
+        successful_clients = 0
+        for i, result in enumerate(results):
+            wallet_name = list(self.wallets_config.keys())[i]
+            if isinstance(result, Exception):
+                self.logger.critical(f"❌ Failed to onboard wallet '{wallet_name}': {result}", exc_info=False)
+            else:
+                self.logger.info(f"✅ Successfully onboarded wallet '{wallet_name}'.")
+                self._clients[wallet_name] = result
+                successful_clients += 1
         
-        config_keys = {
-            "paradex": {
-                "key": first_wallet_creds["l1_address"],
-                "secret": first_wallet_creds["l1_private_key"],
-            }
-        }
-        
+        if successful_clients == 0 and len(self.wallets_config) > 0:
+            raise RuntimeError("All wallets failed to initialize. See logs for details. Exiting.")
+        elif successful_clients < len(self.wallets_config):
+             self.logger.warning("One or more wallets failed to initialize. The bot will run with the successful ones.")
+
+        self.is_initialized = True
+        self.logger.info("ParadexClientManager initialization complete.")
+
+    async def _onboard_wallet(self, wallet_name: str, creds: Dict[str, str], env: str) -> Paradex:
+        """Helper coroutine to create and onboard a single Paradex client."""
+        self.logger.debug(f"Attempting to onboard wallet: {wallet_name} ({creds['l1_address']})")
+        client = Paradex(
+            env=env,
+            l1_address=creds["l1_address"],
+            l1_private_key=creds["l1_private_key"],
+        )
         try:
-            GatewayManager._gateway_instance = Gateway(config_keys=config_keys)
-            await GatewayManager._gateway_instance.init_clients()
-            self.is_initialized = True
-            self.logger.info("Master gateway initialization successful.")
+            await client.init_account(
+                l1_address=creds["l1_address"],
+                l1_private_key=creds["l1_private_key"]
+            )
         except Exception as e:
-            self.logger.critical(f"Failed to initialize master gateway: {e}", exc_info=True)
-            raise
+            # Account might already be initialized, which is fine
+            if "already initialized" in str(e):
+                self.logger.debug(f"Account {wallet_name} already initialized, continuing...")
+            else:
+                raise e
+        return client
 
-    def get_gateway(self) -> Gateway:
+    def get_client(self, wallet_name: str) -> Paradex:
         """
-        Provides access to the shared Gateway instance.
+        Provides access to an initialized client for a specific wallet.
 
         Returns:
-            The initialized Gateway object.
+            The initialized Paradex client object.
 
         Raises:
-            RuntimeError: If the gateway has not been initialized yet.
+            RuntimeError: If the manager has not been initialized yet.
+            ValueError: If no client is found for the given wallet name.
         """
-        if not self.is_initialized or GatewayManager._gateway_instance is None:
+        if not self.is_initialized:
             raise RuntimeError(
-                "Gateway has not been initialized. Call `await manager.initialize()` first."
+                "ClientManager has not been initialized. Call `await manager.initialize()` first."
             )
-        return GatewayManager._gateway_instance
+        client = self._clients.get(wallet_name)
+        if not client:
+            raise ValueError(f"No initialized client found for wallet '{wallet_name}'. This may be due to an onboarding failure.")
+        return client
 
     async def cleanup(self):
-        """
-        Gracefully closes all connections managed by the Gateway.
-        """
-        if self.is_initialized and GatewayManager._gateway_instance:
-            self.logger.info("Cleaning up master gateway connections...")
-            await GatewayManager._gateway_instance.cleanup_clients()
+        """Gracefully closes all client connections."""
+        if self.is_initialized and self._clients:
+            self.logger.info("Cleaning up all client connections...")
+            cleanup_tasks = [client.close() for client in self._clients.values()]
+            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
             self.is_initialized = False
-            GatewayManager._gateway_instance = None
-            self.logger.info("Master gateway cleaned up successfully.")
+            self._clients.clear()
+            self.logger.info("All clients cleaned up successfully.")

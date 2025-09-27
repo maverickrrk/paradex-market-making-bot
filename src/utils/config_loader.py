@@ -1,3 +1,5 @@
+# FILE: src/utils/config_loader.py
+
 import yaml
 import csv
 import os
@@ -92,6 +94,9 @@ def load_wallets(path: str = "config/wallets.csv") -> Dict[str, Dict[str, str]]:
                 if not all([wallet_name, l1_address, l1_private_key]):
                     raise ConfigError(f"Missing data in {path} at line {i}. All fields are required.")
 
+                if not l1_private_key.startswith("0x"):
+                     raise ConfigError(f"Invalid l1_private_key for '{wallet_name}' in {path} at line {i}. It must start with '0x'.")
+
                 if wallet_name in wallets:
                     raise ConfigError(f"Duplicate wallet_name '{wallet_name}' found in {path}.")
 
@@ -126,21 +131,22 @@ def load_env_vars() -> Dict[str, str]:
     dotenv_path = project_root / '.env'
     
     if not dotenv_path.exists():
-        raise ConfigError(
-            f"The .env file was not found at the expected location: {dotenv_path}"
-        )
+        # Fallback for running tests or scripts from different directories
+        if os.path.exists('.env'):
+            dotenv_path = '.env'
+        else:
+            raise ConfigError(
+                f"The .env file was not found at the project root: {dotenv_path}"
+            )
         
     load_dotenv(dotenv_path=dotenv_path)
     
     paradex_env = os.getenv("PARADEX_ENV")
     
-    if not paradex_env:
+    if not paradex_env or paradex_env.lower() not in ['testnet', 'mainnet']:
         raise ConfigError(
-            "The 'PARADEX_ENV' environment variable is not set. "
+            "The 'PARADEX_ENV' environment variable is not set or is invalid. "
             "Please create a .env file and set PARADEX_ENV to 'testnet' or 'mainnet'."
         )
     
-    # Add a print statement for definitive proof
-    print(f"--- Successfully loaded environment: PARADEX_ENV = {paradex_env} ---")
-    
-    return {"PARADEX_ENV": paradex_env}
+    return {"PARADEX_ENV": paradex_env.lower()}

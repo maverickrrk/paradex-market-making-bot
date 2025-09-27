@@ -1,14 +1,8 @@
+# FILE: src/strategies/base_strategy.py
+
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Tuple, Optional
 import logging
-
-# A type hint for the order book data structure from quantpylib.
-# We import it this way to avoid circular dependency issues and keep strategy logic clean.
-try:
-    from quantpylib.hft.lob import LOB
-except ImportError:
-    LOB = Any # Fallback for type hinting if library isn't available during static analysis
-
 
 class BaseStrategy(ABC):
     """
@@ -38,7 +32,7 @@ class BaseStrategy(ABC):
     @abstractmethod
     def compute_quotes(
         self, 
-        lob_data: LOB, 
+        lob_data: Any, # Expects a SimpleLOB object from the Trader
         current_position: float, 
         account_balance: float
     ) -> Optional[Tuple[float, float, float, float]]:
@@ -49,8 +43,9 @@ class BaseStrategy(ABC):
         the desired bid and ask quotes.
 
         Args:
-            lob_data: A quantpylib LOB object representing the current state of
-                      the limit order book.
+            lob_data: An object representing the current order book. At runtime,
+                      this will be the `SimpleLOB` instance from the Trader, which
+                      provides methods like .is_empty(), .get_mid(), and .get_vamp().
             current_position: The current size of the position in the base asset
                               (e.g., 1.5 for long 1.5 BTC, -0.5 for short 0.5 BTC).
             account_balance: The total equity or relevant balance of the account.
@@ -58,8 +53,7 @@ class BaseStrategy(ABC):
         Returns:
             A tuple containing (bid_price, bid_size, ask_price, ask_size).
             The sizes should be in the base asset (e.g., BTC for BTC-USD-PERP).
-            Returns None if the strategy decides not to place quotes at this time
-            (e.g., due to wide spread, low liquidity, or other conditions).
+            Returns None if the strategy decides not to place quotes at this time.
         """
         pass
 

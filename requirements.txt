@@ -2,17 +2,13 @@
 # Project Dependencies
 # ==============================================================================
 #
-# CRITICAL: Due to dependency conflicts between quantpylib and paradex-py,
-# these packages must be installed manually in a specific order.
-# See the README.md for step-by-step installation instructions.
-# Do NOT run `pip install -r requirements.txt` on a fresh environment.
-#
-# This file serves as a reference for the core packages used.
-#
-# --- Core Libraries (Manual Install Required) ---
-# git+https://github.com/sumitabh1710/quantpylib.git
-# paradex-py
-#
+# This bot uses the official Paradex Python SDK for all exchange interactions.
+# Installation is straightforward using pip.
+
+# --- Core Exchange Library ---
+paradex-py
+
 # --- Application Utilities ---
-# python-dotenv
-# PyYAML
+python-dotenv
+PyYAML
+numpy  # Required for numerical operations in the strategy
