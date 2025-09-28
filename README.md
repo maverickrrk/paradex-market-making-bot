@@ -293,7 +293,7 @@ Enable detailed logging by setting `level: "DEBUG"` in `main_config.yaml`.
 
 - **Issues**: Report bugs via GitHub Issues
 - **Documentation**: Contribute improvements to this README
-- **Features**: Submit pull requests for new strategies or enhancement
+- **Features**: Submit pull requests for new strategies or enhancements
 
 ---
 
