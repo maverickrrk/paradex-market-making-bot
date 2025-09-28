@@ -4,10 +4,13 @@ from typing import Dict, Any, List
 
 # Configure logging for the main script
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(levelname)s:%(name)s:%(message)s',
     force=True  # Override any existing configuration
 )
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 try:
     # Try absolute imports first (when running as module from project root)
@@ -57,7 +60,7 @@ class Orchestrator:
                 log_level=log_settings.get("level", "INFO"),
                 log_dir=log_settings.get("directory", "logs"),
             )
-            self.logger.info("Configuration loaded and logger initialized.")
+            self.logger.info("Bot initialized")
 
             # Initialize the GatewayManager with all wallets
             self.gateway_manager = GatewayManager(
@@ -125,7 +128,6 @@ class Orchestrator:
 
             # --- Launch and Manage Trader Tasks ---
             if self.traders:
-                self.logger.info(f"Launching {len(self.traders)} trader task(s)...")
                 trader_tasks = [asyncio.create_task(trader.run()) for trader in self.traders]
                 await asyncio.gather(*trader_tasks)
             else:
@@ -134,16 +136,14 @@ class Orchestrator:
 
 
         except asyncio.CancelledError:
-            self.logger.info("Main orchestrator task cancelled. Initiating shutdown...")
+            pass
         except Exception as e:
-            self.logger.critical(f"A critical error occurred in the orchestrator run loop: {e}", exc_info=True)
+            self.logger.critical(f"Critical error: {e}")
         finally:
             await self.shutdown()
             
     async def shutdown(self):
         """Gracefully shuts down all components."""
-        self.logger.info("Shutting down all traders...")
-        
         # Concurrently stop all trader tasks
         if self.traders:
             await asyncio.gather(*(trader.stop() for trader in self.traders))
@@ -151,8 +151,6 @@ class Orchestrator:
         # Close the master gateway connection
         if self.gateway_manager:
             await self.gateway_manager.cleanup()
-            
-        self.logger.info("Shutdown complete. Exiting.")
 
 
 async def main():

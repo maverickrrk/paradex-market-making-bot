@@ -1,25 +1,29 @@
 import logging
-from typing import Dict, Any
+import httpx
+import asyncio
+from typing import Dict, Any, Optional
 
-from .custom_gateway import CustomGateway
+# Import official Paradex SDK
+try:
+    from paradex_py import Paradex
+    from paradex_py.environment import TESTNET, PROD
+    PARADEX_SDK_AVAILABLE = True
+except ImportError:
+    PARADEX_SDK_AVAILABLE = False
+    Paradex = None
+    TESTNET = None
+    PROD = None
+
 
 class GatewayManager:
     """
-    Manages a single, shared instance of the quantpylib Gateway.
-
-    This class ensures that the entire application uses one Gateway object,
-    optimizing resource usage (e.g., connection pooling, rate limiting).
-    It is responsible for initializing the connection to Paradex with all
-    the wallet credentials provided and for gracefully shutting it down.
+    Manages a single, shared instance of the official Paradex SDK client.
     """
-    _gateway_instance: CustomGateway = None
+    _gateway_instance: Optional[Paradex] = None
 
     def __init__(self, wallets: Dict[str, Dict[str, str]], paradex_env: str):
         """
         Initializes the GatewayManager.
-
-        Note: This does not establish the connection. The `initialize` async
-        method must be called to do that.
 
         Args:
             wallets: A dictionary of all wallets loaded from wallets.csv.
@@ -32,22 +36,12 @@ class GatewayManager:
 
     async def initialize(self):
         """
-        Creates and initializes the master Gateway instance.
-
-        This method configures the Gateway with all provided wallet keys and
-        establishes the necessary connections to the exchange.
+        Creates and initializes the official Paradex SDK client.
         """
         if self.is_initialized:
             self.logger.warning("Gateway is already initialized.")
             return
 
-        self.logger.info(f"Initializing master gateway for {len(self.wallets)} wallet(s) on '{self.paradex_env}'...")
-
-        # quantpylib's Gateway needs a specific dictionary format.
-        # For Paradex, we need to pass the configuration in the format expected by the Paradex wrapper.
-        # Since we have multiple wallets, we'll use the first wallet for now and handle multi-wallet later.
-        # TODO: Implement proper multi-wallet support in quantpylib Gateway
-        
         if not self.wallets:
             raise ValueError("No wallets configured")
             
@@ -55,28 +49,90 @@ class GatewayManager:
         first_wallet_name = list(self.wallets.keys())[0]
         first_wallet_creds = self.wallets[first_wallet_name]
         
-        config_keys = {
-            "paradex": {
-                "key": first_wallet_creds["l1_address"],
-                "secret": first_wallet_creds["l1_private_key"],
-            }
-        }
+        self.logger.info(f"🚀 Initializing official Paradex SDK for {len(self.wallets)} wallet(s) on '{self.paradex_env}'...")
         
+        # Get the private key and address for the Paradex client
+        private_key = first_wallet_creds.get("l1_private_key")
+        l1_address = first_wallet_creds.get("l1_address")
+        
+        if not private_key:
+            raise ValueError(f"No private key found for wallet {first_wallet_name}")
+        if not l1_address:
+            raise ValueError(f"No L1 address found for wallet {first_wallet_name}")
+        
+        # Set the environment
+        environment = TESTNET if self.paradex_env == "testnet" else PROD
+        
+        # Patch SDK httpx client with higher timeouts and env proxy support
         try:
-            GatewayManager._gateway_instance = CustomGateway(config_keys=config_keys, paradex_env=self.paradex_env)
-            await GatewayManager._gateway_instance.init_clients()
-            self.is_initialized = True
-            self.logger.info("Master gateway initialization successful.")
-        except Exception as e:
-            self.logger.critical(f"Failed to initialize master gateway: {e}", exc_info=True)
-            raise
+            from paradex_py.api import http_client as paradex_http_client
+            timeout = httpx.Timeout(30.0, connect=30.0, read=30.0, write=30.0)
+            
+            def _patched_httpclient_init(self):
+                self.client = httpx.Client(timeout=timeout, trust_env=True)
+                self.client.headers.update({"Content-Type": "application/json"})
+            
+            paradex_http_client.HttpClient.__init__ = _patched_httpclient_init
+        except Exception:
+            pass
+        
+        # Retry Paradex initialization to mitigate transient TLS handshake timeouts
+        last_error: Optional[Exception] = None
+        for attempt in range(1, 4):
+            try:
+                # Create Paradex without keys to avoid implicit onboarding
+                GatewayManager._gateway_instance = Paradex(
+                    env=environment,
+                    logger=self.logger
+                )
+                last_error = None
+                break
+            except Exception as e:
+                last_error = e
+                if attempt < 3:
+                    self.logger.warning(f"Paradex init attempt {attempt} failed: {e}. Retrying...")
+                    await asyncio.sleep(2 * attempt)
+                else:
+                    self.logger.critical(f"❌ Failed to initialize Paradex SDK client: {e}", exc_info=True)
+                    raise
+        
+        if last_error is not None:
+            # Shouldn't happen, but guard anyway
+            raise last_error
+        
+        # Manually attach account and authenticate (skip onboarding)
+        from paradex_py.account.account import ParadexAccount
+        paradex = GatewayManager._gateway_instance
+        account = ParadexAccount(
+            config=paradex.config,
+            l1_address=l1_address,
+            l1_private_key=private_key,  # pass hex string
+        )
+        paradex.account = account
+        paradex.api_client.account = account
+        
+        # Always attempt onboarding first; ignore if already onboarded
+        try:
+            paradex.api_client.onboarding()
+        except Exception as ob_err:
+            if "PARENT_ADDRESS_ALREADY_ONBOARDED" in str(ob_err):
+                pass
+            else:
+                self.logger.critical(f"❌ Onboarding failed: {ob_err}")
+                raise
+        
+        # Then authenticate to get JWT and auth_timestamp
+        paradex.api_client.auth()
+        
+        self.is_initialized = True
+        self.logger.info("✅ Official Paradex SDK client initialized and authenticated successfully.")
 
-    def get_gateway(self) -> CustomGateway:
+    def get_gateway(self) -> Paradex:
         """
-        Provides access to the shared Gateway instance.
+        Provides access to the shared ParadexClient instance.
 
         Returns:
-            The initialized CustomGateway object.
+            The initialized ParadexClient object.
 
         Raises:
             RuntimeError: If the gateway has not been initialized yet.
@@ -89,11 +145,11 @@ class GatewayManager:
 
     async def cleanup(self):
         """
-        Gracefully closes all connections managed by the Gateway.
+        Gracefully closes all connections managed by the Paradex client.
         """
         if self.is_initialized and GatewayManager._gateway_instance:
-            self.logger.info("Cleaning up master gateway connections...")
-            await GatewayManager._gateway_instance.cleanup_clients()
-            self.is_initialized = False
+            self.logger.info("Cleaning up Paradex SDK client connections...")
+            # The official SDK doesn't have explicit cleanup, but we can set to None
             GatewayManager._gateway_instance = None
-            self.logger.info("Master gateway cleaned up successfully.")
+            self.is_initialized = False
+            self.logger.info("Paradex SDK client cleaned up successfully.")
