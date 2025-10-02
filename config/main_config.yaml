@@ -19,7 +19,16 @@ tasks:
       inventory_skew_bps: 20
 
       # Faster refresh for more responsive market making. 500ms = 0.5 seconds
-      refresh_frequency_ms: 500
+      refresh_frequency_ms: 2000
 
       # Only reprice if new quote differs by this threshold (in bps)
       reprice_threshold_bps: 5
+
+    # Optional hedging configuration (for delta-neutral automation)
+    hedge:
+      enabled: true
+      exchange: "hyperliquid"    # currently supports 'hyperliquid'
+      symbol_map:
+        ETH-USD-PERP: "ETH"      # example mapping for Hyperliquid (ETH-USD-PERP -> ETH)
+      mode: "market"             # or "limit"
+      slippage_bps: 10

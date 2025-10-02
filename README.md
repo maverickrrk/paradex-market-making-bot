@@ -107,6 +107,16 @@ Edit `.env` file:
 ```bash
 # Set your trading environment
 PARADEX_ENV=testnet  # Use 'testnet' for testing, 'mainnet' for live trading
+
+# Paradex WebSocket URL (optional override)
+PARADEX_WS_URL=wss://ws.api.prod.paradex.trade/v1
+
+# Edge REST and WS credentials (fill with real values before running)
+EDGE_API_KEY=your_edge_api_key
+EDGE_API_SECRET=your_edge_api_secret
+EDGE_REST_URL=https://api.edge.exchange
+EDGE_WS_URL=
+EDGE_ORDER_ENDPOINT=/v1/orders
 ```
 
 ### **2. Wallet Credentials Setup**

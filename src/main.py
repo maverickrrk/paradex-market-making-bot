@@ -18,6 +18,8 @@ try:
     from src.utils.logger import setup_logger
     from src.core.gateway_manager import GatewayManager
     from src.core.trader import Trader
+    from src.core.hedge.edge import HyperliquidHedge
+    from src.core.hedge.orchestrator import OneClickHedger
     from src.strategies.base_strategy import BaseStrategy
     from src.strategies.vamp_mm import VampMM
 except ImportError:
@@ -26,6 +28,8 @@ except ImportError:
     from utils.logger import setup_logger
     from core.gateway_manager import GatewayManager
     from core.trader import Trader
+    from core.hedge.edge import HyperliquidHedge
+    from core.hedge.orchestrator import OneClickHedger
     from strategies.base_strategy import BaseStrategy
     from strategies.vamp_mm import VampMM
 
@@ -116,6 +120,42 @@ class Orchestrator:
                 strategy_class = STRATEGY_CATALOG[strategy_name]
                 strategy_instance = strategy_class(strategy_params)
 
+                # Optional: construct hedger if hedge config provided
+                hedge_conf = task_conf.get("hedge", {})
+                hedger = None
+                if hedge_conf.get("enabled"):
+                    exchange = hedge_conf.get("exchange", "hyperliquid").lower()
+                    symbol_map = hedge_conf.get("symbol_map", {})
+                    mode = hedge_conf.get("mode", "market")
+                    slippage_bps = float(hedge_conf.get("slippage_bps", 10))
+
+                    # Prefer .env creds; fall back to wallets.csv optional fields
+                    wallet_creds = self.wallets.get(wallet_name, {})
+                    hedge_private_key = self.env_vars.get("HYPERLIQUID_PRIVATE_KEY") or wallet_creds.get("hedge_private_key", "")
+                    hedge_public_address = self.env_vars.get("HYPERLIQUID_PUBLIC_ADDRESS") or wallet_creds.get("hedge_public_address", "")
+                    hyperliquid_base_url = self.env_vars.get("HYPERLIQUID_REST_URL") or "https://api.hyperliquid.xyz"
+                    hyperliquid_order_endpoint = self.env_vars.get("HYPERLIQUID_ORDER_ENDPOINT") or "/exchange"
+
+                    if exchange == "hyperliquid":
+                        hedge_client = HyperliquidHedge(
+                            private_key=hedge_private_key,
+                            public_address=hedge_public_address,
+                            base_url=hyperliquid_base_url,
+                            order_endpoint=hyperliquid_order_endpoint,
+                        )
+                    else:
+                        self.logger.error(f"Unsupported hedge exchange: {exchange}")
+                        hedge_client = None
+
+                    if hedge_client is not None:
+                        hedger = OneClickHedger(
+                            hedge=hedge_client,
+                            symbol_map=symbol_map,
+                            mode=mode,
+                            slippage_bps=slippage_bps,
+                        )
+                        await hedger.initialize()
+
                 # Create the Trader instance
                 trader = Trader(
                     wallet_name=wallet_name,
@@ -124,6 +164,8 @@ class Orchestrator:
                     gateway=gateway,
                     refresh_frequency_ms=refresh_ms
                 )
+                # Late binding to avoid constructor signature changes; set attribute if present
+                setattr(trader, "hedger", hedger)
                 self.traders.append(trader)
 
             # --- Launch and Manage Trader Tasks ---

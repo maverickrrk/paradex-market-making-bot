@@ -100,7 +100,9 @@ class GatewayManager:
             # Shouldn't happen, but guard anyway
             raise last_error
         
-        # Manually attach account and authenticate (skip onboarding)
+        # Manually attach account and authenticate (skip onboarding). If sub-account
+        # information is provided, still use L1 for auth but note that trading will
+        # occur under sub-account scoping at the API layer when supported.
         from paradex_py.account.account import ParadexAccount
         paradex = GatewayManager._gateway_instance
         account = ParadexAccount(
@@ -110,6 +112,21 @@ class GatewayManager:
         )
         paradex.account = account
         paradex.api_client.account = account
+
+        # Optional: attach sub-account metadata if available (SDK-dependent)
+        sub_id = first_wallet_creds.get("paradex_sub_account_id")
+        sub_key = first_wallet_creds.get("paradex_sub_api_key")
+        sub_secret = first_wallet_creds.get("paradex_sub_api_secret")
+        if sub_id and sub_key and sub_secret:
+            try:
+                # Some SDKs support setting headers or params. This is a placeholder
+                # to illustrate attaching sub-account context; adapt to SDK specifics.
+                setattr(paradex.api_client, "sub_account_id", sub_id)
+                setattr(paradex.api_client, "sub_api_key", sub_key)
+                setattr(paradex.api_client, "sub_api_secret", sub_secret)
+                self.logger.info(f"Using Paradex sub-account context: {sub_id}")
+            except Exception:
+                self.logger.warning("Paradex SDK does not support sub-account context directly; proceed with L1 auth only.")
         
         # Always attempt onboarding first; ignore if already onboarded
         try:

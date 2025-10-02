@@ -41,8 +41,12 @@ def load_wallets(path: str = "config/wallets.csv") -> Dict[str, Dict[str, str]]:
     """
     Loads wallet credentials from the specified CSV file.
 
-    The CSV file must have a header and the following columns:
+    The CSV file must have a header with at least the following columns:
     'wallet_name', 'l1_address', 'l1_private_key'
+
+    Optional columns for Paradex sub-accounts and hedge exchange credentials:
+    - 'paradex_sub_account_id', 'paradex_sub_api_key', 'paradex_sub_api_secret'
+    - 'hedge_exchange', 'hedge_api_key', 'hedge_api_secret'
 
     Args:
         path: The file path to the wallets.csv file.
@@ -70,24 +74,25 @@ def load_wallets(path: str = "config/wallets.csv") -> Dict[str, Dict[str, str]]:
             
             # Read header and validate
             header = next(reader, None)
-            expected_header = ["wallet_name", "l1_address", "l1_private_key"]
-            if not header or [h.strip() for h in header] != expected_header:
+            header = [h.strip() for h in header] if header else []
+            required_header = ["wallet_name", "l1_address", "l1_private_key"]
+            if not header or any(col not in header for col in required_header):
                 raise ConfigError(
                     f"Invalid or missing header in {path}. "
-                    f"Expected: {', '.join(expected_header)}"
+                    f"Required columns: {', '.join(required_header)}"
                 )
 
             # Read wallet data
             for i, row in enumerate(reader, start=2):
                 if not row or all(not field.strip() for field in row):  # Skip empty lines
                     continue
-                if len(row) != 3:
-                    raise ConfigError(
-                        f"Incorrect number of columns in {path} at line {i}. "
-                        f"Expected 3, found {len(row)}."
-                    )
-                
-                wallet_name, l1_address, l1_private_key = [field.strip() for field in row]
+                # Map row to dict by header names (supports optional columns)
+                row_values = [field.strip() for field in row]
+                row_dict = {header[idx]: row_values[idx] for idx in range(min(len(header), len(row_values)))}
+
+                wallet_name = row_dict.get("wallet_name", "")
+                l1_address = row_dict.get("l1_address", "")
+                l1_private_key = row_dict.get("l1_private_key", "")
                 
                 if not all([wallet_name, l1_address, l1_private_key]):
                     raise ConfigError(f"Missing data in {path} at line {i}. All fields are required.")
@@ -95,10 +100,28 @@ def load_wallets(path: str = "config/wallets.csv") -> Dict[str, Dict[str, str]]:
                 if wallet_name in wallets:
                     raise ConfigError(f"Duplicate wallet_name '{wallet_name}' found in {path}.")
 
-                wallets[wallet_name] = {
+                wallet_entry = {
                     "l1_address": l1_address,
                     "l1_private_key": l1_private_key,
                 }
+
+                # Optional sub-account fields
+                if "paradex_sub_account_id" in row_dict:
+                    wallet_entry["paradex_sub_account_id"] = row_dict.get("paradex_sub_account_id", "")
+                if "paradex_sub_api_key" in row_dict:
+                    wallet_entry["paradex_sub_api_key"] = row_dict.get("paradex_sub_api_key", "")
+                if "paradex_sub_api_secret" in row_dict:
+                    wallet_entry["paradex_sub_api_secret"] = row_dict.get("paradex_sub_api_secret", "")
+
+                # Optional hedge exchange fields
+                if "hedge_exchange" in row_dict:
+                    wallet_entry["hedge_exchange"] = row_dict.get("hedge_exchange", "")
+                if "hedge_api_key" in row_dict:
+                    wallet_entry["hedge_api_key"] = row_dict.get("hedge_api_key", "")
+                if "hedge_api_secret" in row_dict:
+                    wallet_entry["hedge_api_secret"] = row_dict.get("hedge_api_secret", "")
+
+                wallets[wallet_name] = wallet_entry
         
         if not wallets:
             raise ConfigError(f"No wallets found in {path}. The file cannot be empty.")
@@ -133,6 +156,12 @@ def load_env_vars() -> Dict[str, str]:
     load_dotenv(dotenv_path=dotenv_path)
     
     paradex_env = os.getenv("PARADEX_ENV")
+    paradex_ws_url = os.getenv("PARADEX_WS_URL", "wss://ws.api.prod.paradex.trade/v1")
+    hyperliquid_private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY", "")
+    hyperliquid_public_address = os.getenv("HYPERLIQUID_PUBLIC_ADDRESS", "")
+    hyperliquid_rest_url = os.getenv("HYPERLIQUID_REST_URL", "https://api.hyperliquid.xyz")
+    hyperliquid_ws_url = os.getenv("HYPERLIQUID_WS_URL", "")
+    hyperliquid_order_endpoint = os.getenv("HYPERLIQUID_ORDER_ENDPOINT", "/exchange")
     
     if not paradex_env:
         raise ConfigError(
@@ -143,4 +172,12 @@ def load_env_vars() -> Dict[str, str]:
     # Add a print statement for definitive proof
     print(f"--- Successfully loaded environment: PARADEX_ENV = {paradex_env} ---")
     
-    return {"PARADEX_ENV": paradex_env}
+    return {
+        "PARADEX_ENV": paradex_env,
+        "PARADEX_WS_URL": paradex_ws_url,
+        "HYPERLIQUID_PRIVATE_KEY": hyperliquid_private_key,
+        "HYPERLIQUID_PUBLIC_ADDRESS": hyperliquid_public_address,
+        "HYPERLIQUID_REST_URL": hyperliquid_rest_url,
+        "HYPERLIQUID_WS_URL": hyperliquid_ws_url,
+        "HYPERLIQUID_ORDER_ENDPOINT": hyperliquid_order_endpoint,
+    }
