@@ -9,17 +9,17 @@ tasks:
     market_symbol: "ETH-USD-PERP" # A liquid market, good for testing.
     strategy_name: "vamp_mm"
     strategy_params:
-      # CRITICAL: Paradex requires minimum $100 USD per order
-      # This is the minimum allowed by the exchange
-      order_value: 100
+      # Using $100 order value for sequential trading (meets min notional)
+      order_value: 105
 
-      # Use a wider spread for testing. This makes it less likely you get filled instantly,
-      # giving you more time to observe the bot's quoting behavior. 25 bps = 0.25%
+      # Use wider spreads to avoid POST_ONLY_WOULD_CROSS errors. 25 bps = 0.25%
       base_spread_bps: 25
 
       # A strong skew helps manage risk quickly if you get a fill on a small account.
       inventory_skew_bps: 20
 
-      # Slow down the refresh rate so you can easily read the logs in real-time.
-      # 2000ms = 2 seconds between each quote update.
-      refresh_frequency_ms: 2000
+      # Faster refresh for more responsive market making. 500ms = 0.5 seconds
+      refresh_frequency_ms: 500
+
+      # Only reprice if new quote differs by this threshold (in bps)
+      reprice_threshold_bps: 5

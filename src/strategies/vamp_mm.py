@@ -38,93 +38,113 @@ class VampMM(BaseStrategy):
         lob_data: LOB, 
         current_position: float, 
         account_balance: float
-    ) -> Optional[Tuple[float, float, float, float]]:
+    ) -> Optional[Dict[str, Any]]:
         """
-        Calculates bid and ask quotes based on the VAMP logic.
+        Calculates bid and ask quotes based on the VAMP logic with dynamic sizing.
 
         Args:
             lob_data: The current limit order book state.
-            current_position: The bot's current position in the base asset.
+            current_position: The bot's current position in the base asset (ETH amount).
             account_balance: The account's total equity.
 
         Returns:
-            A tuple of (bid_price, bid_size, ask_price, ask_size), or None if no
-            quote should be placed.
+            A dictionary with order details including multiple buy/sell orders based on inventory,
+            or None if no quotes should be placed.
         """
         if lob_data is None or lob_data.is_empty():
             self.logger.warning("Order book data is missing or empty. Cannot compute quotes.")
             return None
 
         # --- 1. Calculate Reference Price (VAMP) ---
-        # We use the notional value of our desired order size to calculate the VAMP.
-        # This gives us a reference price that reflects the liquidity we intend to trade with.
-        reference_notional = self.get_param("order_value")
+        reference_notional = self.get_param("order_value")  # $10 base unit
         vamp_price = lob_data.get_vamp(reference_notional)
 
         if vamp_price is None or np.isnan(vamp_price) or vamp_price <= 0:
             self.logger.warning(f"Could not calculate a valid VAMP price. Mid price will be used as fallback.")
-            vamp_price = lob_data.get_mid() # Fallback to mid-price if VAMP fails
+            vamp_price = lob_data.get_mid()
             if vamp_price is None or np.isnan(vamp_price) or vamp_price <= 0:
                  self.logger.error("Fallback mid-price is also invalid. Skipping quote.")
                  return None
 
-        # --- 2. Calculate Desired Spread and Inventory Skew ---
+        # --- 2. Calculate Available Inventory ---
+        # current_position is in ETH amount (positive = long ETH, negative = short ETH)
+        # account_balance is total equity in USD
+        
+        # Calculate available USDC (for buy orders)
+        # If we have positive ETH position, we have less USDC available
+        eth_value = float(current_position) * vamp_price
+        available_usdc = account_balance - max(0, eth_value)  # Available USDC for buying
+        
+        # Calculate available ETH (for sell orders) 
+        # If we have negative ETH position, we have less ETH available
+        available_eth_value = max(0, eth_value)  # Available ETH value for selling
+        
+        # --- 3. Calculate Number of Orders Based on Inventory ---
+        # Calculate how many $10 orders we can place based on available funds
+        max_buy_orders = max(0, int(available_usdc / reference_notional))  # Number of buy orders
+        max_sell_orders = max(0, int(available_eth_value / reference_notional))  # Number of sell orders
+        
+        self.logger.info(f"💰 Inventory Analysis:")
+        self.logger.info(f"   ETH Position: {current_position:.4f} ETH (${eth_value:.2f})")
+        self.logger.info(f"   Available USDC: ${available_usdc:.2f} → {max_buy_orders} buy orders")
+        self.logger.info(f"   Available ETH: ${available_eth_value:.2f} → {max_sell_orders} sell orders")
+        
+        # --- 4. Calculate Prices with Spread and Skew ---
         base_spread_bps = self.get_param("base_spread_bps")
         inventory_skew_bps = self.get_param("inventory_skew_bps")
         
-        # Calculate our current inventory notional value
-        # Convert current_position to float to handle Decimal types from OMS
-        inventory_notional = float(current_position) * vamp_price
-
-        # The skew factor pushes our price to encourage trades that reduce our inventory.
-        # It's scaled by the ratio of our current inventory to our standard order size.
-        inventory_skew_ratio = inventory_notional / reference_notional
-        
-        # Use tanh to create a smooth, bounded skew effect.
-        # As inventory grows, the skew approaches inventory_skew_bps but never exceeds it.
+        # Calculate inventory skew based on current position
+        inventory_skew_ratio = eth_value / reference_notional
         skew_adjustment_bps = np.tanh(inventory_skew_ratio) * inventory_skew_bps
         
-        # --- 3. Calculate Final Bid and Ask Prices ---
-        # Convert basis points to a decimal multiplier
+        # Calculate final prices
         base_spread_multiplier = base_spread_bps / 10000.0
         skew_multiplier = skew_adjustment_bps / 10000.0
-
-        # The skew is subtracted from the mid-point price.
-        # If we are long (positive inventory), skew is positive, pushing both bid and ask down.
-        # If we are short (negative inventory), skew is negative, pushing both bid and ask up.
-        adjusted_mid_price = vamp_price * (1 - skew_multiplier)
         
+        adjusted_mid_price = vamp_price * (1 - skew_multiplier)
         half_spread = vamp_price * (base_spread_multiplier / 2.0)
         
-        bid_price = adjusted_mid_price - half_spread
-        ask_price = adjusted_mid_price + half_spread
-
-        # --- 4. Final Sanity Checks ---
-        # Ensure bid is lower than ask and both are positive.
-        if bid_price <= 0 or ask_price <= 0 or bid_price >= ask_price:
-            self.logger.warning(
-                f"Invalid quote calculation: bid={bid_price}, ask={ask_price}. Skipping."
-            )
-            return None
-
-        # --- 5. Calculate Order Sizes ---
-        # Calculate the size in the base asset based on our target notional value.
-        bid_size = reference_notional / bid_price
-        ask_size = reference_notional / ask_price
+        bid_price = round(adjusted_mid_price - half_spread, 2)
+        ask_price = round(adjusted_mid_price + half_spread, 2)
         
-        # --- 6. Round prices AND SIZES to match exchange requirements ---
-        # Paradex requires prices to be rounded to exactly 2 decimal places
-        # and amounts (sizes) to be rounded to exactly 4 decimal places
-        bid_price = round(bid_price, 2)
-        ask_price = round(ask_price, 2)
-        bid_size = round(bid_size, 4)
-        ask_size = round(ask_size, 4)
+        # --- 5. Create Order Lists ---
+        buy_orders = []
+        sell_orders = []
         
-        self.logger.debug(
-            f"Pos: {current_position:.4f} | "
-            f"VAMP: {vamp_price:.2f} | "
-            f"Skew bps: {skew_adjustment_bps:.2f} | "
-            f"Quote: {bid_price:.2f} @ {bid_size:.4f} <-> {ask_price:.2f} @ {ask_size:.4f}"
-        )
-
-        return bid_price, bid_size, ask_price, ask_size
+        # Create buy orders (if we have USDC)
+        if max_buy_orders > 0:
+            single_buy_size = round(reference_notional / bid_price, 4)
+            for i in range(max_buy_orders):
+                buy_orders.append({
+                    "side": "BUY",
+                    "price": bid_price,
+                    "size": single_buy_size,
+                    "notional": reference_notional
+                })
+        
+        # Create sell orders (if we have ETH)
+        if max_sell_orders > 0:
+            single_sell_size = round(reference_notional / ask_price, 4)
+            for i in range(max_sell_orders):
+                sell_orders.append({
+                    "side": "SELL", 
+                    "price": ask_price,
+                    "size": single_sell_size,
+                    "notional": reference_notional
+                })
+        
+        self.logger.info(f"📊 Generated {len(buy_orders)} buy orders and {len(sell_orders)} sell orders")
+        
+        return {
+            "buy_orders": buy_orders,
+            "sell_orders": sell_orders,
+            "vamp_price": vamp_price,
+            "inventory_analysis": {
+                "eth_position": current_position,
+                "eth_value": eth_value,
+                "available_usdc": available_usdc,
+                "available_eth_value": available_eth_value,
+                "max_buy_orders": max_buy_orders,
+                "max_sell_orders": max_sell_orders
+            }
+        }
