@@ -78,14 +78,27 @@ class ParadexWSFills:
                     # Subscribe to private orders/fills stream (channel naming subject to API)
                     # Try multiple known patterns defensively
                     subs = [
-                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "user.orders"}, "id": 2},
-                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "user.trades"}, "id": 3},
+                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "user.fills"}, "id": 2},
+                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "user.orders"}, "id": 3},
+                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "user.trades"}, "id": 4},
+                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "fills"}, "id": 5},
+                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "orders"}, "id": 6},
+                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "trades"}, "id": 7},
+                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "user_fills"}, "id": 8},
+                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "user_orders"}, "id": 9},
+                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "user_trades"}, "id": 10},
                     ]
                     for msg in subs:
                         try:
                             await ws.send(json.dumps(msg))
-                            _ = await asyncio.wait_for(ws.recv(), timeout=5.0)
-                        except Exception:
+                            resp = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                            resp_data = json.loads(resp)
+                            if resp_data.get("error"):
+                                self.logger.warning(f"WS subscription failed for {msg['params']['channel']}: {resp_data['error']}")
+                            else:
+                                self.logger.info(f"WS subscription successful for {msg['params']['channel']}")
+                        except Exception as e:
+                            self.logger.warning(f"WS subscription error for {msg['params']['channel']}: {e}")
                             continue
 
                     retry_delay = 1.0

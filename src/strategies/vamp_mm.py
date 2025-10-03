@@ -66,16 +66,9 @@ class VampMM(BaseStrategy):
                  self.logger.error("Fallback mid-price is also invalid. Skipping quote.")
                  return None
         
-        self.logger.info(f"📊 VAMP Price calculated: ${vamp_price:.2f}")
-
         # --- 2. Calculate Available Inventory ---
         # current_position is in ETH amount (positive = long ETH, negative = short ETH)
         # account_balance is total equity in USD
-        
-        self.logger.info(f"🔍 Input parameters:")
-        self.logger.info(f"   current_position: {current_position:.4f} ETH")
-        self.logger.info(f"   account_balance: ${account_balance:.2f} USDC")
-        self.logger.info(f"   reference_notional: ${reference_notional:.2f}")
         
         # Calculate available USDC (for buy orders)
         # If we have positive ETH position, we have less USDC available
@@ -83,13 +76,13 @@ class VampMM(BaseStrategy):
         available_usdc = account_balance - max(0, eth_value)  # Available USDC for buying
         
         # Calculate available ETH (for sell orders) 
-        # If we have negative ETH position, we have less ETH available
-        available_eth_value = max(0, eth_value)  # Available ETH value for selling
+        # If we have positive ETH position, we can sell it
+        available_eth_value = max(0, current_position * vamp_price)  # Available ETH value for selling
         
-        # --- 3. Calculate Number of Orders Based on Inventory ---
-        # Calculate how many $10 orders we can place based on available funds
-        max_buy_orders = max(0, int(available_usdc / reference_notional))  # Number of buy orders
-        max_sell_orders = max(0, int(available_eth_value / reference_notional))  # Number of sell orders
+        # --- 3. Place Only ONE Order Per Side (Simplified) ---
+        # Only place one order per side to avoid multiple orders
+        max_buy_orders = 1 if available_usdc >= reference_notional else 0
+        max_sell_orders = 1 if available_eth_value >= reference_notional else 0
         
         # For testing purposes, if we have no balance, create at least one order of each type
         if account_balance == 0.0:
@@ -97,10 +90,6 @@ class VampMM(BaseStrategy):
             max_buy_orders = 1
             max_sell_orders = 1
         
-        self.logger.info(f"💰 Inventory Analysis:")
-        self.logger.info(f"   ETH Position: {current_position:.4f} ETH (${eth_value:.2f})")
-        self.logger.info(f"   Available USDC: ${available_usdc:.2f} → {max_buy_orders} buy orders")
-        self.logger.info(f"   Available ETH: ${available_eth_value:.2f} → {max_sell_orders} sell orders")
         
         # --- 4. Calculate Prices with Spread and Skew ---
         base_spread_bps = self.get_param("base_spread_bps")
@@ -146,7 +135,6 @@ class VampMM(BaseStrategy):
                     "notional": reference_notional
                 })
         
-        self.logger.info(f"📊 Generated {len(buy_orders)} buy orders and {len(sell_orders)} sell orders")
         
         return {
             "buy_orders": buy_orders,

@@ -2,12 +2,12 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Tuple, Optional
 import logging
 
-# A type hint for the order book data structure from quantpylib.
-# We import it this way to avoid circular dependency issues and keep strategy logic clean.
-try:
-    from quantpylib.hft.lob import LOB
-except ImportError:
-    LOB = Any # Fallback for type hinting if library isn't available during static analysis
+# Use a simple LOB type hint - the actual implementation is in trader.py
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from src.core.trader import SimpleLOB as LOB
+else:
+    LOB = Any
 
 
 class BaseStrategy(ABC):

@@ -9,17 +9,16 @@ tasks:
     market_symbol: "ETH-USD-PERP" # A liquid market, good for testing.
     strategy_name: "vamp_mm"
     strategy_params:
-      # Using $100 order value for sequential trading (meets min notional)
+      # Using $200 order value to reduce number of trades
       order_value: 105
-
-      # Use wider spreads to avoid POST_ONLY_WOULD_CROSS errors. 25 bps = 0.25%
-      base_spread_bps: 25
+      # Use positive spread to protect against losses
+      base_spread_bps: 0
 
       # A strong skew helps manage risk quickly if you get a fill on a small account.
       inventory_skew_bps: 20
 
-      # Faster refresh for more responsive market making. 500ms = 0.5 seconds
-      refresh_frequency_ms: 2000
+      # Slower refresh to reduce over-trading
+      refresh_frequency_ms: 5000
 
       # Only reprice if new quote differs by this threshold (in bps)
       reprice_threshold_bps: 5

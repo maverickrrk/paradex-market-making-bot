@@ -3,11 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Optional, Dict, Any
-import time
-import json
-import hmac
-import hashlib
-import httpx
+from hyperliquid.exchange import Exchange
+from hyperliquid.info import Info
+from eth_account import Account
 
 from .base import HedgeExchange
 
@@ -16,44 +14,58 @@ class HyperliquidHedge(HedgeExchange):
     """
     Hyperliquid exchange adapter for delta-neutral hedging.
 
-    Implements REST API calls for order placement and position management.
-    Uses Hyperliquid's API with proper authentication and error handling.
+    Uses the official Hyperliquid Python SDK for order placement and position management.
     """
 
     def __init__(self, private_key: str, public_address: str, base_url: Optional[str] = None, order_endpoint: str = "/exchange"):
+        # Create eth_account wallet from private key for signing
+        if not private_key.startswith('0x'):
+            private_key = '0x' + private_key
+        
         self.private_key = private_key
         self.public_address = public_address
-        self.base_url = base_url or "https://api.hyperliquid.xyz"
-        self.order_endpoint = order_endpoint
         self._initialized = False
-        self._http: Optional[httpx.AsyncClient] = None
         self.logger = logging.getLogger(self.__class__.__name__)
+        
+        # Initialize Hyperliquid SDK clients
+        try:
+            # Create wallet object from private key for signing
+            self.wallet = Account.from_key(self.private_key)
+            
+            # Initialize Exchange with the wallet object (not string)
+            self.exchange = Exchange(
+                wallet=self.wallet,  # Pass the Account object, not address string
+                base_url=base_url,
+                account_address=self.public_address
+            )
+            self.info = Info(base_url=base_url)
+            self.logger.info(f"Hyperliquid SDK initialized for address: {self.public_address}")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize Hyperliquid SDK: {e}")
+            raise
 
     async def initialize(self) -> None:
-        timeout = httpx.Timeout(20.0, connect=20.0)
-        self._http = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, trust_env=True)
         self._initialized = True
+        self.logger.info("Hyperliquid adapter ready")
 
     async def get_position(self, symbol: str) -> float:
         """Get current position for the given symbol."""
-        assert self._http is not None, "Hyperliquid HTTP client not initialized"
-        
         try:
-            # Hyperliquid uses different symbol format, convert if needed
+            # Convert symbol to Hyperliquid format
             hyperliquid_symbol = self._convert_symbol(symbol)
             
-            # Get user state to find position
-            resp = await self._http.post("/info", json={
-                "type": "clearinghouseState",
-                "user": self.public_address
-            })
-            resp.raise_for_status()
-            data = resp.json()
+            # Get user state using SDK
+            user_state = await asyncio.to_thread(
+                self.info.user_state,
+                self.public_address
+            )
             
             # Find position for the symbol
-            for asset in data.get("assetPositions", []):
-                if asset.get("coin") == hyperliquid_symbol:
-                    return float(asset.get("position", {}).get("size", 0))
+            if user_state and "assetPositions" in user_state:
+                for asset_pos in user_state["assetPositions"]:
+                    position = asset_pos.get("position", {})
+                    if position.get("coin") == hyperliquid_symbol:
+                        return float(position.get("szi", 0))
             return 0.0
         except Exception as e:
             self.logger.warning(f"Failed to get position for {symbol}: {e}")
@@ -70,59 +82,103 @@ class HyperliquidHedge(HedgeExchange):
         client_id: Optional[str] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        assert self._http is not None, "Hyperliquid HTTP client not initialized"
-
         try:
             # Convert symbol to Hyperliquid format
             hyperliquid_symbol = self._convert_symbol(symbol)
             
-            # Prepare order action
-            order_action = {
-                "type": "order",
-                "orders": [{
-                    "a": self.public_address,  # account address
-                    "b": side.upper() == "BUY",  # isBuy
-                    "p": str(price) if price is not None else "0",  # price (0 for market)
-                    "s": str(size),  # size
-                    "r": False,  # reduceOnly
-                    "t": "Ioc" if tif == "IOC" else "Gtc",  # time in force
-                    "c": client_id or f"hedge_{int(time.time())}",  # client order id
-                }],
-                "grouping": "na"
-            }
-
-            # Get current timestamp for signature
-            ts = str(int(time.time() * 1000))
+            # Determine if this is a buy or sell
+            is_buy = side.upper() == "BUY"
             
-            # Create signature using private key (simplified - adjust per Hyperliquid docs)
-            message = f"{ts}{json.dumps(order_action, separators=(',', ':'))}"
-            # For now, use HMAC with private key as secret (adjust per actual Hyperliquid signing)
-            signature = hmac.new(
-                self.private_key.encode(), 
-                message.encode(), 
-                hashlib.sha256
-            ).hexdigest()
-
-            # Submit order
-            resp = await self._http.post(self.order_endpoint, json={
-                "action": order_action,
-                "nonce": ts,
-                "signature": signature
-            })
-            resp.raise_for_status()
+            self.logger.info(f"🔍 DEBUG: Hyperliquid order - side={side}, is_buy={is_buy}, will create {'LONG' if is_buy else 'SHORT'} position")
             
-            result = resp.json()
-            return {
-                "status": "accepted" if result.get("status") == "ok" else "rejected",
-                "side": side,
-                "size": size,
-                "symbol": symbol,
-                "price": price,
-                "client_id": client_id,
-                "id": result.get("response", {}).get("data", {}).get("statuses", [{}])[0].get("resting", {}).get("oid"),
-                "raw": result
-            }
+            # Place order using SDK
+            # Market order if no price specified
+            if price is None:
+                self.logger.info(f"Placing MARKET {side} order: {size} {hyperliquid_symbol}")
+                # market_open(coin, is_buy, sz, px=None, slippage=0.05, cloid=None)
+                # Note: cloid must be None or a Cloid object, not a string - omitting it
+                result = await asyncio.to_thread(
+                    self.exchange.market_open,
+                    hyperliquid_symbol,  # coin
+                    is_buy,              # is_buy
+                    size,                # sz
+                    None,                # px (None for market)
+                    0.05                 # slippage (5% default)
+                    # cloid omitted - SDK will handle it
+                )
+            else:
+                # Limit order
+                self.logger.info(f"Placing LIMIT {side} order: {size} {hyperliquid_symbol} @ {price}")
+                order_type = {"limit": {"tif": tif}}
+                # Note: cloid must be None or a Cloid object, not a string - omitting it
+                result = await asyncio.to_thread(
+                    self.exchange.order,
+                    hyperliquid_symbol,
+                    is_buy,
+                    size,
+                    price,
+                    order_type,
+                    None  # reduce_only
+                    # cloid omitted - SDK will handle it
+                )
+            
+            self.logger.info(f"Hyperliquid order result: {result}")
+            
+            # Parse response
+            if result and result.get("status") == "ok":
+                # Check if the order was actually filled or just accepted
+                response_data = result.get("response", {})
+                if response_data.get("type") == "order":
+                    order_data = response_data.get("data", {})
+                    statuses = order_data.get("statuses", [])
+                    if statuses and len(statuses) > 0:
+                        status = statuses[0]
+                        if "filled" in status:
+                            self.logger.info(f"✅ Hyperliquid order FILLED: {side} {size} {symbol}")
+                        elif "error" in status:
+                            error_msg = status["error"]
+                            self.logger.error(f"❌ Hyperliquid order ERROR: {error_msg}")
+                            return {
+                                "status": "rejected",
+                                "error": error_msg,
+                                "side": side,
+                                "size": size,
+                                "symbol": symbol,
+                                "price": price,
+                                "client_id": client_id,
+                                "raw": result
+                            }
+                        else:
+                            self.logger.info(f"✅ Hyperliquid order ACCEPTED: {side} {size} {symbol}")
+                    else:
+                        self.logger.info(f"✅ Hyperliquid order ACCEPTED: {side} {size} {symbol}")
+                else:
+                    self.logger.info(f"✅ Hyperliquid order ACCEPTED: {side} {size} {symbol}")
+                
+                return {
+                    "status": "accepted",
+                    "side": side,
+                    "size": size,
+                    "symbol": symbol,
+                    "price": price,
+                    "client_id": client_id,
+                    "raw": result
+                }
+            else:
+                error_msg = result.get("response", "Unknown error") if result else "No response"
+                self.logger.error(f"❌ Hyperliquid order REJECTED: {error_msg}")
+                return {
+                    "status": "rejected",
+                    "error": error_msg,
+                    "side": side,
+                    "size": size,
+                    "symbol": symbol,
+                    "price": price,
+                    "client_id": client_id,
+                    "raw": result
+                }
         except Exception as e:
+            self.logger.error(f"❌ Hyperliquid order failed: {e}", exc_info=True)
             return {
                 "status": "error",
                 "error": str(e),
@@ -133,11 +189,24 @@ class HyperliquidHedge(HedgeExchange):
                 "client_id": client_id
             }
 
+    async def cancel_order(self, order_id: str) -> None:
+        """Cancels an order on the hedge exchange."""
+        try:
+            result = await asyncio.to_thread(
+                self.exchange.cancel,
+                order_id
+            )
+            self.logger.info(f"Cancelled order {order_id}: {result}")
+        except Exception as e:
+            self.logger.error(f"Failed to cancel order {order_id}: {e}")
+
+    async def cleanup(self) -> None:
+        """Cleans up resources."""
+        self.logger.info("Hyperliquid adapter cleanup complete")
+
     def _convert_symbol(self, symbol: str) -> str:
         """Convert Paradex symbol format to Hyperliquid format."""
         # Example: ETH-USD-PERP -> ETH
         if "-" in symbol:
             return symbol.split("-")[0]
         return symbol
-
-

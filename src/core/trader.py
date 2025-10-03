@@ -1,6 +1,7 @@
 import asyncio
 import logging
-from typing import Dict, Any, Optional
+import time
+from typing import Dict, Any, Optional, Set
 from decimal import Decimal
 
 from paradex_py import Paradex
@@ -47,9 +48,17 @@ class Trader:
 
         # Optional hedger injected by orchestrator (OneClickHedger)
         self.hedger = None
-        # Track last seen filled sizes per order id to compute deltas
-        self._fill_ledger: Dict[str, float] = {}
+        # Track individual fills for simple hedging (no rebalancing)
+        self._processed_fills: Set[str] = set()  # Track which fills we've already hedged
         self._fills_ws: Optional[ParadexWSFills] = None
+        self._has_placed_orders = False  # Track if we've successfully placed any orders
+        self._our_order_ids: Set[str] = set()  # Track all order IDs we've placed (including filled ones)
+        self._order_details: Dict[str, Dict[str, Any]] = {}  # Track order details (side, price, size)
+        self._recent_order_ids: Set[str] = set()  # Track only recent orders for fill detection
+        
+        # Position-based hedging
+        self._paradex_position = 0.0  # Track net Paradex position
+        self._hyperliquid_position = 0.0  # Track net Hyperliquid position
 
     # ---------------------------
     # SDK wrapper helpers (sync -> async)
@@ -59,6 +68,12 @@ class Trader:
             return await asyncio.to_thread(self.gateway.api_client.fetch_account_info)
         except Exception as e:
             return {}
+
+    async def _setup_websocket_fills(self) -> None:
+        """Setup WebSocket fills for real-time fill detection."""
+        # WebSocket subscriptions are failing, use polling-based detection
+        self.logger.info("🔄 Using polling-based fill detection (WebSocket subscriptions not working)")
+        self._fills_ws = None
 
     async def _sdk_fetch_orderbook(self) -> Dict[str, Any]:
         try:
@@ -78,11 +93,21 @@ class Trader:
 
     async def _sdk_fetch_orders(self) -> Dict[str, Any]:
         try:
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 self.gateway.api_client.fetch_orders, params={"market": self.market_symbol}
             )
+            return result
         except Exception as e:
+            self.logger.error(f"❌ Orders API error: {e}")
             return {"orders": []}
+    
+    async def _sdk_fetch_trades(self) -> Dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                self.gateway.api_client.fetch_trades, params={"market": self.market_symbol}
+            )
+        except Exception as e:
+            return {"results": []}
 
     async def _sdk_fetch_balances(self) -> Dict[str, Any]:
         try:
@@ -138,18 +163,33 @@ class Trader:
         return await self._sdk_fetch_orders()
 
     async def _place_order(self, side: str, amount: float, price: float) -> Optional[str]:
-        # Log order details before placing
-        notional_value = amount * price
-        self.logger.info(f"💰 Order notional: ${notional_value:.2f} (${amount:.4f} ETH @ ${price:.2f})")
-        
         result = await self._sdk_place_order(side, amount, price)
         if result:
-            self.logger.info(f"✅ {side} order SUCCESS: {amount} @ {price:.2f}")
+            self.logger.info(f"✅ {side} {amount:.4f} @ ${price:.2f}")
+            self._has_placed_orders = True  # Mark that we've successfully placed orders
             if isinstance(result, dict):
                 order_id = result.get("id") or result.get("order_id") or str(result)
-                self.logger.info(f"🆔 Order ID: {order_id}")
+                self._our_order_ids.add(order_id)  # Track this order ID
+                self._recent_order_ids.add(order_id)  # Track for recent fill detection
+                # Track order details for fill detection
+                self._order_details[order_id] = {
+                    "side": side,
+                    "price": price,
+                    "size": amount,
+                    "status": "OPEN"
+                }
                 return order_id
-            return str(result)
+            order_id = str(result)
+            self._our_order_ids.add(order_id)  # Track this order ID
+            self._recent_order_ids.add(order_id)  # Track for recent fill detection
+            # Track order details for fill detection
+            self._order_details[order_id] = {
+                "side": side,
+                "price": price,
+                "size": amount,
+                "status": "OPEN"
+            }
+            return order_id
         else:
             self.logger.error(f"❌ {side} order FAILED: {amount} @ {price:.2f}")
         return None
@@ -217,46 +257,13 @@ class Trader:
             account_info = await self._fetch_account_info()
             self.logger.info(f"🚀 Trader started for {self.market_symbol}")
 
-            # Attempt to start WS fills listener if hedger present
+            # Setup WebSocket fills for real-time fill detection
             if getattr(self, "hedger", None):
                 try:
-                    ws_url = getattr(self.gateway, "config", None)
-                    ws_url = getattr(ws_url, "WS_API_URL", None) or "wss://ws.api.prod.paradex.trade/v1"
-
-                    def _get_bearer() -> Optional[str]:
-                        try:
-                            # SDK usually sets api_client.jwt after auth
-                            return getattr(self.gateway.api_client, "jwt", None)
-                        except Exception:
-                            return None
-
-                    async def _on_fill(fill: Dict[str, Any]):
-                        try:
-                            # Determine delta filled since ledger
-                            order_id = fill.get("order_id")
-                            filled = float(fill.get("filled", 0))
-                            side = fill.get("side")
-                            price = float(fill.get("price", 0) or 0)
-                            if not order_id or filled <= 0 or not side:
-                                return
-                            prev = self._fill_ledger.get(order_id, 0.0)
-                            delta = max(0.0, filled - prev)
-                            if delta > 0:
-                                await self.hedger.on_paradex_fill(
-                                    market=self.market_symbol,
-                                    side=side,
-                                    size=delta,
-                                    price=price if price > 0 else (self._latest_lob.best_ask()[0] if side == "BUY" else self._latest_lob.best_bid()[0]),
-                                    client_id=f"hedge_{order_id}",
-                                )
-                                self._fill_ledger[order_id] = filled
-                        except Exception:
-                            pass
-
-                    self._fills_ws = ParadexWSFills(ws_url=ws_url, get_bearer=_get_bearer, on_fill=_on_fill)
-                    await self._fills_ws.start()
-                except Exception:
-                    self.logger.warning("Paradex WS fills not started; will rely on polling fallback.")
+                    await self._setup_websocket_fills()
+                except Exception as e:
+                    self.logger.warning(f"WebSocket setup failed, using polling: {e}")
+                    # Fall back to polling-based fill detection
 
             while self._is_running:
                 start_time = asyncio.get_event_loop().time()
@@ -270,12 +277,10 @@ class Trader:
             await self.stop()
 
     async def _process_tick(self):
-        self.logger.info("🔄 Processing tick...")
         orderbook = await self._get_orderbook()
         self._latest_lob = self._create_lob_from_orderbook(orderbook)
 
         if self._latest_lob.is_empty():
-            self.logger.warning("📊 Orderbook is empty")
             await self._cancel_all_orders()
             return
         
@@ -330,8 +335,6 @@ class Trader:
                 except Exception:
                     continue
 
-        self.logger.info(f"💰 Position: {current_position:.4f} ETH, Balance: ${account_balance:.2f} USDC")
-
         quotes = self.strategy.compute_quotes(
                 lob_data=self._latest_lob,
                 current_position=current_position,
@@ -341,29 +344,23 @@ class Trader:
         if quotes:
             buy_orders = quotes.get("buy_orders", [])
             sell_orders = quotes.get("sell_orders", [])
-            vamp_price = quotes.get("vamp_price", 0)
-            
-            self.logger.info(f"🎯 Strategy generated {len(buy_orders)} buy orders and {len(sell_orders)} sell orders")
-            self.logger.info(f"📈 VAMP Price: ${vamp_price:.2f}")
             
             if len(buy_orders) > 0 or len(sell_orders) > 0:
                 try:
                     await self._update_quotes_dynamic(buy_orders, sell_orders)
-                    self.logger.info("✅ Orders updated successfully")
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to update orders: {e}")
-                    # Don't cancel all orders on error, just log it
-            else:
-                self.logger.warning("⚠️  Strategy returned empty order lists")
+                    self.logger.error(f"Failed to update orders: {e}")
         else:
-            self.logger.info("❌ No quotes generated by strategy")
             await self._cancel_all_orders()
 
-        # After managing quotes, poll orders to detect new fills (WS integration TBD)
-        try:
-            await self._detect_and_hedge_new_fills()
-        except Exception as e:
-            self.logger.error(f"Hedge detection error: {e}")
+        # Check for fills if we have a hedger AND we have successfully placed orders
+        hedger_present = getattr(self, "hedger", None) is not None
+        if hedger_present and self._has_placed_orders and not self._fills_ws:
+            # Fallback to polling if WebSocket is not available
+            try:
+                await self._detect_and_hedge_new_fills()
+            except Exception as e:
+                self.logger.error(f"Hedge detection error: {e}")
 
     async def _update_quotes_dynamic(self, buy_orders: list, sell_orders: list):
         """Update quotes - cancel old orders (>1min) and place fresh ones."""
@@ -391,13 +388,11 @@ class Trader:
                     order_id = order.get('id') or order.get('order_id')
                     if order_id:
                         orders_to_cancel.append(order_id)
-                        self.logger.info(f"⏰ Order {order_id} is older than 1min, marking for cancel")
             except Exception as e:
                 continue
         
         # Cancel old orders
         if orders_to_cancel:
-            self.logger.info(f"🗑️ Canceling {len(orders_to_cancel)} old orders...")
             for order_id in orders_to_cancel:
                 await self._cancel_order(order_id)
         
@@ -405,63 +400,190 @@ class Trader:
         remaining_orders = await self._get_orders()
         remaining_list = remaining_orders.get("orders", []) or remaining_orders.get("results", []) or []
         
+        # Only place new orders if we have NO existing orders
         if remaining_list:
-            self.logger.info("📊 Fresh orders still exist, skipping placement")
             return
 
         # Place buy orders
         if buy_orders:
-            self.logger.info(f"📝 Placing {len(buy_orders)} BUY orders...")
-            for i, order in enumerate(buy_orders):
-                self.logger.info(f"   BUY #{i+1}: {order['size']:.4f} @ ${order['price']:.2f} (${order['notional']:.2f})")
+            for order in buy_orders:
                 await self._place_order(order["side"], order["size"], order["price"])
-        else:
-            self.logger.info("❌ No buy orders to place")
 
         # Place sell orders
         if sell_orders:
-            self.logger.info(f"📝 Placing {len(sell_orders)} SELL orders...")
-            for i, order in enumerate(sell_orders):
-                self.logger.info(f"   SELL #{i+1}: {order['size']:.4f} @ ${order['price']:.2f} (${order['notional']:.2f})")
+            for order in sell_orders:
                 await self._place_order(order["side"], order["size"], order["price"])
-        else:
-            self.logger.info("❌ No sell orders to place")
 
     async def _detect_and_hedge_new_fills(self) -> None:
         """
-        Polls existing orders, compares filled sizes against ledger, and triggers hedging
-        for any newly filled quantity per order id.
+        Simple fill hedging: hedge each fill once, never rebalance.
+        Check if our recent orders disappeared from the orders API (indicating they were filled).
         """
         if not getattr(self, "hedger", None):
             return
 
-        orders_snapshot = await self._get_orders()
-        orders_list = orders_snapshot.get("orders", []) or orders_snapshot.get("results", []) or []
-
+        if not self._recent_order_ids:
+            self.logger.info("🔍 No recent orders to check, skipping fill detection")
+            return
+        
+        self.logger.info(f"🔍 Checking for fills from our {len(self._recent_order_ids)} recent orders")
+        
+        # Check our orders to see if any were filled
+        current_orders = await self._get_orders()
+        orders_list = current_orders.get("orders", []) or current_orders.get("results", []) or []
+        self.logger.info(f"🔍 Retrieved {len(orders_list)} orders from API")
+        
+        # Get current order IDs from API
+        current_order_ids = set()
         for order in orders_list:
+            order_id = order.get("id") or order.get("order_id")
+            if order_id:
+                current_order_ids.add(order_id)
+        
+        # Find recent orders that disappeared (indicating they were filled)
+        filled_orders = []
+        orders_to_remove = set()
+        
+        for our_order_id in self._recent_order_ids:
+            if our_order_id not in current_order_ids:
+                # Order disappeared from API - it was likely filled
+                self.logger.info(f"🎯 ORDER DISAPPEARED (FILLED): {our_order_id}")
+                
+                # Get order details from our tracking
+                if our_order_id in self._order_details:
+                    order_info = self._order_details[our_order_id]
+                    filled_orders.append({
+                        "order_id": our_order_id,
+                        "side": order_info["side"],
+                        "price": order_info["price"],
+                        "size": order_info["size"],
+                        "status": "FILLED"
+                    })
+                    self.logger.info(f"🎯 FILLED ORDER DETAILS: {order_info['side']} {order_info['size']} @ {order_info['price']} (Order ID: {our_order_id})")
+                    # Remove from recent orders since it's filled
+                    orders_to_remove.add(our_order_id)
+                else:
+                    self.logger.warning(f"⚠️ Order {our_order_id} disappeared but we don't have its details")
+                    orders_to_remove.add(our_order_id)
+        
+        # Also check for orders that are still there but have filled_size > 0
+        for order in orders_list:
+            order_id = order.get("id") or order.get("order_id")
+            status = (order.get("status") or "").upper()
+            side = (order.get("side") or order.get("order_side") or "").upper()
+            price = float(order.get("price") or order.get("limit_price") or 0)
+            size = float(order.get("size") or order.get("quantity") or 0)
+            filled_size = float(order.get("filled_size") or order.get("filled") or 0)
+            
+            if order_id in self._recent_order_ids and (status == "FILLED" or filled_size > 0):
+                filled_orders.append({
+                    "order_id": order_id,
+                    "side": side,
+                    "price": price,
+                    "size": filled_size if filled_size > 0 else size,
+                    "status": status
+                })
+                self.logger.info(f"🎯 FOUND FILLED ORDER: {side} {filled_size if filled_size > 0 else size} @ {price} (Order ID: {order_id})")
+                orders_to_remove.add(order_id)
+        
+        # Remove filled orders from recent tracking
+        self._recent_order_ids -= orders_to_remove
+        
+        # Process filled orders
+        fills_found = 0
+        for fill in filled_orders:
             try:
-                order_id = order.get("id") or order.get("order_id")
-                side = (order.get("side") or order.get("order_side") or "").upper()
-                price = float(order.get("price") or order.get("limit_price") or 0)
-                size_total = float(order.get("size") or order.get("quantity") or 0)
-                filled = float(order.get("filled") or order.get("filled_size") or order.get("executedQty") or 0)
-                if not order_id:
+                order_id = fill["order_id"]
+                side = fill["side"]
+                price = fill["price"]
+                size = fill["size"]
+                
+                # Skip if we've already processed this order
+                if order_id in self._processed_fills:
+                    self.logger.info(f"⏭️  Already processed order: {order_id}")
                     continue
-
-                prev_filled = self._fill_ledger.get(order_id, 0.0)
-                delta_fill = max(0.0, filled - prev_filled)
-                if delta_fill > 0:
-                    # Trigger hedge on delta
-                    await self.hedger.on_paradex_fill(
-                        market=self.market_symbol,
-                        side=side,
-                        size=delta_fill,
-                        price=price if price > 0 else (self._latest_lob.best_ask()[0] if side == "BUY" else self._latest_lob.best_bid()[0]),
-                        client_id=f"hedge_{order_id}",
-                    )
-                    self._fill_ledger[order_id] = filled
-            except Exception:
+                
+                fills_found += 1
+                self.logger.info(f"🎯 OUR FILL: {side} {size} @ {price} (Order ID: {order_id})")
+                
+                # Place ONE hedge order for this fill (opposite side)
+                hedge_side = "SELL" if side == "BUY" else "BUY"
+                
+                self.logger.info(f"🔄 Hedging {side} {size} → {hedge_side} {size} on Hyperliquid")
+                self.logger.info(f"🔍 DEBUG: Paradex {side} fill should create {hedge_side} position on Hyperliquid")
+                
+                # Place hedge order - pass the ORIGINAL side, let orchestrator do the conversion
+                await self.hedger.on_paradex_fill(
+                    market=self.market_symbol,
+                    side=side,  # Pass original side, let orchestrator convert
+                    size=size,
+                    price=price if price > 0 else (self._latest_lob.best_ask()[0] if hedge_side == "BUY" else self._latest_lob.best_bid()[0]),
+                    client_id=f"hedge_{order_id}",
+                )
+                
+                # Mark this order as processed (never hedge it again)
+                self._processed_fills.add(order_id)
+                self.logger.info(f"✅ Hedge placed: {hedge_side} {size} ETH (Order ID: {order_id})")
+                
+            except Exception as e:
+                self.logger.error(f"Error processing filled order: {e}")
                 continue
+        
+        # Log summary
+        if fills_found == 0:
+            self.logger.info(f"🔍 No filled orders found in {len(orders_list)} total orders")
+        else:
+            self.logger.info(f"🔍 Found {fills_found} filled orders to hedge")
+
+    async def _hedge_net_position(self) -> None:
+        """Hedge the net Paradex position on Hyperliquid."""
+        if not getattr(self, "hedger", None):
+            return
+        
+        # No rate limiting needed with WebSocket
+        
+        # Calculate required hedge
+        required_hedge = -self._paradex_position  # Opposite direction
+        current_hedge = self._hyperliquid_position
+        
+        hedge_difference = required_hedge - current_hedge
+        
+        # Only hedge if difference is significant (> 0.001 ETH)
+        if abs(hedge_difference) < 0.001:
+            return
+        
+        # Determine hedge side and size
+        if hedge_difference > 0:
+            hedge_side = "BUY"
+            hedge_size = hedge_difference
+        else:
+            hedge_side = "SELL"
+            hedge_size = abs(hedge_difference)
+        
+        self.logger.info(f"🔄 Hedging net position: {hedge_side} {hedge_size:.4f} ETH")
+        
+        try:
+            # Place hedge order
+            await self.hedger.on_paradex_fill(
+                market=self.market_symbol,
+                side=hedge_side,
+                size=hedge_size,
+                price=None,  # Market order
+                client_id=f"hedge_net_{int(time.time())}",
+            )
+            
+            # Update Hyperliquid position
+            if hedge_side == "BUY":
+                self._hyperliquid_position += hedge_size
+            else:
+                self._hyperliquid_position -= hedge_size
+            
+            # No rate limiting needed
+            self.logger.info(f"✅ Net hedge placed: {hedge_side} {hedge_size:.4f} ETH")
+            self.logger.info(f"📊 Hyperliquid position: {self._hyperliquid_position:.4f} ETH")
+            
+        except Exception as e:
+            self.logger.error(f"Error placing net hedge: {e}")
 
     async def _update_quotes(self, bid_price: float, bid_size: float, ask_price: float, ask_size: float):
         """Legacy method for backward compatibility."""
@@ -488,8 +610,8 @@ class Trader:
         if self._fills_ws:
             try:
                 await self._fills_ws.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.error(f"Error stopping WebSocket fills: {e}")
 
 class SimpleLOB:
     def __init__(self, bids: list, asks: list):

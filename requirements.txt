@@ -16,3 +16,5 @@
 # --- Application Utilities ---
 # python-dotenv
 # PyYAML
+# hyperliquid-python-sdk  # Official Hyperliquid SDK
+# httpx  # Async HTTP client
