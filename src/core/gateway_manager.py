@@ -52,13 +52,17 @@ class GatewayManager:
         self.logger.info(f"🚀 Initializing official Paradex SDK for {len(self.wallets)} wallet(s) on '{self.paradex_env}'...")
         
         # Get the private key and address for the Paradex client
-        private_key = first_wallet_creds.get("l1_private_key")
+        private_key_hex = first_wallet_creds.get("l1_private_key")
         l1_address = first_wallet_creds.get("l1_address")
         
-        if not private_key:
+        if not private_key_hex:
             raise ValueError(f"No private key found for wallet {first_wallet_name}")
         if not l1_address:
             raise ValueError(f"No L1 address found for wallet {first_wallet_name}")
+        
+        # Convert private key from hex string to integer (matching official example)
+        from starknet_py.common import int_from_hex
+        private_key = int_from_hex(private_key_hex)
         
         # Set the environment
         environment = TESTNET if self.paradex_env == "testnet" else PROD
@@ -80,9 +84,11 @@ class GatewayManager:
         last_error: Optional[Exception] = None
         for attempt in range(1, 4):
             try:
-                # Create Paradex without keys to avoid implicit onboarding
+                # Create Paradex with L1 credentials directly (matching official example)
                 GatewayManager._gateway_instance = Paradex(
                     env=environment,
+                    l1_address=l1_address,
+                    l1_private_key=private_key,
                     logger=self.logger
                 )
                 last_error = None
@@ -100,18 +106,11 @@ class GatewayManager:
             # Shouldn't happen, but guard anyway
             raise last_error
         
-        # Manually attach account and authenticate (skip onboarding). If sub-account
-        # information is provided, still use L1 for auth but note that trading will
-        # occur under sub-account scoping at the API layer when supported.
-        from paradex_py.account.account import ParadexAccount
+        # Get reference to the Paradex instance
         paradex = GatewayManager._gateway_instance
-        account = ParadexAccount(
-            config=paradex.config,
-            l1_address=l1_address,
-            l1_private_key=private_key,  # pass hex string
-        )
-        paradex.account = account
-        paradex.api_client.account = account
+        
+        # Set leverage to 10x instead of default 50x using API call (non-blocking)
+        asyncio.create_task(self._set_leverage_for_market("ETH-USD-PERP", 10))
 
         # Optional: attach sub-account metadata if available (SDK-dependent)
         sub_id = first_wallet_creds.get("paradex_sub_account_id")
@@ -159,6 +158,35 @@ class GatewayManager:
                 "Gateway has not been initialized. Call `await manager.initialize()` first."
             )
         return GatewayManager._gateway_instance
+
+    async def _set_leverage_for_market(self, market: str, leverage: int):
+        """Set leverage for a specific market using Paradex API."""
+        try:
+            # Get the API client
+            api_client = GatewayManager._gateway_instance.api_client
+            
+            # Prepare the request data
+            data = {
+                "leverage": leverage,
+                "margin_type": "CROSS"
+            }
+            
+            # Use the API client's existing methods to make the request
+            # This ensures proper authentication
+            result = await asyncio.to_thread(
+                api_client._make_request,
+                "POST",
+                f"/v1/account/margin/{market}",
+                data=data
+            )
+            
+            self.logger.info(f"✅ Successfully set leverage to {leverage}x for {market}")
+            return result
+                    
+        except Exception as e:
+            self.logger.error(f"❌ Failed to set leverage for {market}: {e}")
+            # Don't raise - just log and continue
+            self.logger.warning("⚠️  Continuing without leverage setting - using default")
 
     async def cleanup(self):
         """

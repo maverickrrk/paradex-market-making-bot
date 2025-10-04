@@ -171,7 +171,12 @@ class Orchestrator:
             # --- Launch and Manage Trader Tasks ---
             if self.traders:
                 trader_tasks = [asyncio.create_task(trader.run()) for trader in self.traders]
-                await asyncio.gather(*trader_tasks)
+                try:
+                    await asyncio.gather(*trader_tasks)
+                except Exception as e:
+                    self.logger.critical(f"❌ Trader failed: {e}")
+                    self.logger.critical("❌ Shutting down bot due to trader failure")
+                    raise
             else:
                 # If no valid traders, just wait indefinitely
                 await asyncio.Event().wait()

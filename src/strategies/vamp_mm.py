@@ -81,6 +81,7 @@ class VampMM(BaseStrategy):
         
         # --- 3. Position-Based Order Management ---
         # Only place orders that help close the current position
+        max_orders_per_side = self.get_param("max_orders_per_side", 1)  # Limit to 1 order per side by default
         max_buy_orders = 0
         max_sell_orders = 0
         
@@ -88,23 +89,23 @@ class VampMM(BaseStrategy):
         if current_position > 0.001:  # Long position
             # For long positions, we can always sell the position size
             # The position size (in ETH) should be sufficient for selling
-            max_sell_orders = 1
-            self.logger.info(f"📈 Long position detected ({current_position:.4f} ETH) - placing SELL orders only")
+            max_sell_orders = min(1, max_orders_per_side)
+            self.logger.info(f"📈 Long position detected ({current_position:.4f} ETH) - placing {max_sell_orders} SELL orders only")
             self.logger.info(f"🔍 DEBUG: Position size: {current_position:.4f} ETH, Available ETH value: ${available_eth_value:.2f}")
         
         # If we have a short position, only place BUY orders to close it
         elif current_position < -0.001:  # Short position
             if available_usdc >= reference_notional:
-                max_buy_orders = 1
-                self.logger.info(f"📉 Short position detected ({current_position:.4f} ETH) - placing BUY orders only")
+                max_buy_orders = min(1, max_orders_per_side)
+                self.logger.info(f"📉 Short position detected ({current_position:.4f} ETH) - placing {max_buy_orders} BUY orders only")
             else:
                 self.logger.warning(f"⚠️  Short position but insufficient USDC for buying")
         
         # If we're flat (no position), place both BUY and SELL orders
         else:
-            max_buy_orders = 1 if available_usdc >= reference_notional else 0
-            max_sell_orders = 1 if available_eth_value >= reference_notional else 0
-            self.logger.info(f"⚖️  Flat position - placing both BUY and SELL orders")
+            max_buy_orders = min(1, max_orders_per_side) if available_usdc >= reference_notional else 0
+            max_sell_orders = min(1, max_orders_per_side) if available_eth_value >= reference_notional else 0
+            self.logger.info(f"⚖️  Flat position - placing {max_buy_orders} BUY and {max_sell_orders} SELL orders")
         
         # For testing purposes, if we have no balance, create at least one order of each type
         if account_balance == 0.0 and current_position == 0.0:

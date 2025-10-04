@@ -9,7 +9,7 @@ tasks:
     market_symbol: "ETH-USD-PERP" # A liquid market, good for testing.
     strategy_name: "vamp_mm"
     strategy_params:
-      # Using $200 order value to reduce number of trades
+      # Using $105 order value to reduce number of trades
       order_value: 105
       # Use positive spread to protect against losses
       base_spread_bps: 0
@@ -22,6 +22,12 @@ tasks:
 
       # Only reprice if new quote differs by this threshold (in bps)
       reprice_threshold_bps: 5
+      
+      # Maximum orders per side (1 = only 1 buy and 1 sell order max)
+      max_orders_per_side: 1
+      
+      # Leverage setting (5x or 10x instead of default 50x)
+      leverage: 10
 
     # Optional hedging configuration (for delta-neutral automation)
     hedge:
