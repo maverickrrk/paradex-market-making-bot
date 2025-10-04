@@ -13,51 +13,44 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 try:
-    # Try absolute imports first (when running as module from project root)
     from src.utils.config_loader import load_main_config, load_wallets, load_env_vars, ConfigError
     from src.utils.logger import setup_logger
     from src.core.gateway_manager import GatewayManager
     from src.core.trader import Trader
     from src.core.hedge.edge import HyperliquidHedge
+    from src.core.hedge.lighter import LighterHedge
     from src.core.hedge.orchestrator import OneClickHedger
     from src.strategies.base_strategy import BaseStrategy
     from src.strategies.vamp_mm import VampMM
 except ImportError:
-    # Fall back to relative imports (when running from src directory)
     from utils.config_loader import load_main_config, load_wallets, load_env_vars, ConfigError
     from utils.logger import setup_logger
     from core.gateway_manager import GatewayManager
     from core.trader import Trader
     from core.hedge.edge import HyperliquidHedge
+    from core.hedge.lighter import LighterHedge
     from core.hedge.orchestrator import OneClickHedger
     from strategies.base_strategy import BaseStrategy
     from strategies.vamp_mm import VampMM
 
-# --- Strategy Mapping ---
-# This dictionary maps the 'strategy_name' from the config file to the actual
-# strategy class. This allows for easy extension with new strategies.
-STRATEGY_CATALOG: Dict[str, BaseStrategy] = {
+STRATEGY_CATALOG: Dict[str, Any] = {
     "vamp_mm": VampMM,
 }
 
 class Orchestrator:
-    """
-    The main class that orchestrates the entire bot's lifecycle.
-    """
+    """Orchestrates the bot's lifecycle."""
     def __init__(self):
         self.traders: List[Trader] = []
         self.gateway_manager: GatewayManager = None
         self.logger: logging.Logger = None
 
     def _setup(self):
-        """Loads configuration and sets up the initial components."""
+        """Loads configuration and sets up components."""
         try:
-            # Load all configurations first
             self.env_vars = load_env_vars()
             self.main_config = load_main_config()
             self.wallets = load_wallets()
 
-            # Setup the logger using settings from the main config
             log_settings = self.main_config.get("logging", {})
             self.logger = setup_logger(
                 name="ParadexBot",
@@ -66,149 +59,121 @@ class Orchestrator:
             )
             self.logger.info("Bot initialized")
 
-            # Initialize the GatewayManager with all wallets
             self.gateway_manager = GatewayManager(
                 wallets=self.wallets,
                 paradex_env=self.env_vars["PARADEX_ENV"]
             )
-
-        except ConfigError as e:
-            # Use a basic logger for setup errors as the main one might not be ready
+        except (ConfigError, Exception) as e:
             logging.basicConfig(level=logging.INFO)
-            logging.critical(f"Configuration Error: {e}")
-            exit(1) # Exit if configuration is invalid
-        except Exception as e:
-            logging.basicConfig(level=logging.INFO)
-            logging.critical(f"A critical error occurred during setup: {e}")
+            logging.critical(f"A critical error occurred during setup: {e}", exc_info=True)
             exit(1)
 
     async def run(self):
-        """
-        The main asynchronous execution method.
-        """
+        """Main asynchronous execution method."""
         self._setup()
 
         try:
-            # Initialize the shared gateway connection
-            await self.gateway_manager.initialize()
-            gateway = self.gateway_manager.get_gateway()
-            
-            # --- Create and Prepare Trader Instances ---
             tasks_config = self.main_config.get("tasks", [])
             if not tasks_config:
                 self.logger.warning("No trading tasks found in 'main_config.yaml'. The bot will idle.")
-                
+                return
+
+            await self.gateway_manager.initialize(tasks=tasks_config)
+            gateway = self.gateway_manager.get_gateway()
+            
             for task_conf in tasks_config:
-                wallet_name = task_conf.get("wallet_name")
-                market = task_conf.get("market_symbol")
-                strategy_name = task_conf.get("strategy_name")
+                wallet_name = task_conf["wallet_name"]
+                market = task_conf["market_symbol"]
+                strategy_name = task_conf["strategy_name"]
                 strategy_params = task_conf.get("strategy_params", {})
-                refresh_ms = strategy_params.get("refresh_frequency_ms", 1000)
-
-                # Validate task configuration
-                if not all([wallet_name, market, strategy_name]):
-                    self.logger.error(f"Skipping invalid task in config: {task_conf}")
-                    continue
-                if wallet_name not in self.wallets:
-                    self.logger.error(f"Wallet '{wallet_name}' from task config not found in 'wallets.csv'. Skipping task.")
-                    continue
-                if strategy_name not in STRATEGY_CATALOG:
-                    self.logger.error(f"Strategy '{strategy_name}' not found in STRATEGY_CATALOG. Skipping task.")
-                    continue
-
-                # Instantiate the strategy
+                
                 strategy_class = STRATEGY_CATALOG[strategy_name]
                 strategy_instance = strategy_class(strategy_params)
 
-                # Optional: construct hedger if hedge config provided
-                hedge_conf = task_conf.get("hedge", {})
-                hedger = None
-                if hedge_conf.get("enabled"):
-                    exchange = hedge_conf.get("exchange", "hyperliquid").lower()
-                    symbol_map = hedge_conf.get("symbol_map", {})
-                    mode = hedge_conf.get("mode", "market")
-                    slippage_bps = float(hedge_conf.get("slippage_bps", 10))
+                hedger = await self._create_hedger(task_conf, wallet_name)
 
-                    # Prefer .env creds; fall back to wallets.csv optional fields
-                    wallet_creds = self.wallets.get(wallet_name, {})
-                    hedge_private_key = self.env_vars.get("HYPERLIQUID_PRIVATE_KEY") or wallet_creds.get("hedge_private_key", "")
-                    hedge_public_address = self.env_vars.get("HYPERLIQUID_PUBLIC_ADDRESS") or wallet_creds.get("hedge_public_address", "")
-                    hyperliquid_base_url = self.env_vars.get("HYPERLIQUID_REST_URL") or "https://api.hyperliquid.xyz"
-                    hyperliquid_order_endpoint = self.env_vars.get("HYPERLIQUID_ORDER_ENDPOINT") or "/exchange"
-
-                    if exchange == "hyperliquid":
-                        hedge_client = HyperliquidHedge(
-                            private_key=hedge_private_key,
-                            public_address=hedge_public_address,
-                            base_url=hyperliquid_base_url,
-                            order_endpoint=hyperliquid_order_endpoint,
-                        )
-                    else:
-                        self.logger.error(f"Unsupported hedge exchange: {exchange}")
-                        hedge_client = None
-
-                    if hedge_client is not None:
-                        hedger = OneClickHedger(
-                            hedge=hedge_client,
-                            symbol_map=symbol_map,
-                            mode=mode,
-                            slippage_bps=slippage_bps,
-                        )
-                        await hedger.initialize()
-
-                # Create the Trader instance
                 trader = Trader(
                     wallet_name=wallet_name,
                     market_symbol=market,
                     strategy=strategy_instance,
                     gateway=gateway,
-                    refresh_frequency_ms=refresh_ms
+                    refresh_frequency_ms=strategy_params.get("refresh_frequency_ms", 1000)
                 )
-                # Late binding to avoid constructor signature changes; set attribute if present
-                setattr(trader, "hedger", hedger)
+                trader.hedger = hedger
                 self.traders.append(trader)
 
-            # --- Launch and Manage Trader Tasks ---
             if self.traders:
                 trader_tasks = [asyncio.create_task(trader.run()) for trader in self.traders]
                 await asyncio.gather(*trader_tasks)
             else:
-                # If no valid traders, just wait indefinitely
                 await asyncio.Event().wait()
-
 
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            self.logger.critical(f"Critical error: {e}")
+            self.logger.critical(f"Critical error in orchestrator run loop: {e}", exc_info=True)
         finally:
             await self.shutdown()
             
+    async def _create_hedger(self, task_conf: Dict[str, Any], wallet_name: str) -> Optional[OneClickHedger]:
+        """Creates and initializes a hedge client based on config."""
+        hedge_conf = task_conf.get("hedge", {})
+        if not hedge_conf.get("enabled"):
+            return None
+
+        exchange_name = hedge_conf.get("exchange", "").lower()
+        wallet_creds = self.wallets.get(wallet_name, {})
+        hedge_client = None
+
+        if exchange_name == "hyperliquid":
+            private_key = self.env_vars.get("HYPERLIQUID_PRIVATE_KEY")
+            public_address = self.env_vars.get("HYPERLIQUID_PUBLIC_ADDRESS")
+            if private_key and public_address:
+                hedge_client = HyperliquidHedge(
+                    private_key=private_key,
+                    public_address=public_address,
+                    base_url=self.env_vars.get("HYPERLIQUID_REST_URL"),
+                )
+        elif exchange_name == "lighter":
+            private_key = self.env_vars.get("LIGHTER_PRIVATE_KEY")
+            public_address = self.env_vars.get("LIGHTER_PUBLIC_ADDRESS")
+            if private_key and public_address:
+                hedge_client = LighterHedge(
+                    private_key=private_key,
+                    public_address=public_address,
+                    base_url=self.env_vars.get("LIGHTER_REST_URL"),
+                    is_testnet=self.env_vars.get("LIGHTER_IS_TESTNET", "false").lower() == "true",
+                )
+        
+        if not hedge_client:
+            self.logger.error(f"Hedge exchange '{exchange_name}' is not supported or credentials are missing.")
+            return None
+
+        hedger = OneClickHedger(
+            hedge=hedge_client,
+            symbol_map=hedge_conf.get("symbol_map", {}),
+            mode=hedge_conf.get("mode", "market"),
+            slippage_bps=float(hedge_conf.get("slippage_bps", 10)),
+        )
+        await hedger.initialize()
+        return hedger
+
     async def shutdown(self):
         """Gracefully shuts down all components."""
-        # Concurrently stop all trader tasks
         if self.traders:
+            self.logger.info("Shutting down traders...")
             await asyncio.gather(*(trader.stop() for trader in self.traders))
         
-        # Close the master gateway connection
         if self.gateway_manager:
             await self.gateway_manager.cleanup()
-
+        self.logger.info("Shutdown complete.")
 
 async def main():
-    """Main function to run the bot and handle graceful shutdown."""
     orchestrator = Orchestrator()
-    
-    # This loop ensures that even if the main task exits, we can catch
-    # the shutdown signal (Ctrl+C) and clean up properly.
-    main_task = asyncio.create_task(orchestrator.run())
-
     try:
-        await main_task
+        await orchestrator.run()
     except asyncio.CancelledError:
-        # This is expected on Ctrl+C
         pass
-
 
 if __name__ == "__main__":
     try:

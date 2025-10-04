@@ -1,33 +1,31 @@
 # Logging configuration for detailed debugging
 logging:
-  level: "DEBUG"         # Use DEBUG to see every detail during your first test run.
+  level: "DEBUG"         # Use DEBUG to see every detail during your test run.
   directory: "logs"
 
 # Trading tasks for your FARMER_001 wallet
 tasks:
   - wallet_name: "FARMER_001"
-    market_symbol: "ETH-USD-PERP" # A liquid market, good for testing.
+    # Using DOGE-USD-PERP as it exists on both exchanges
+    market_symbol: "DOGE-USD-PERP"
     strategy_name: "vamp_mm"
     strategy_params:
-      # Using $200 order value to reduce number of trades
-      order_value: 105
-      # Use positive spread to protect against losses
-      base_spread_bps: 0
-
-      # A strong skew helps manage risk quickly if you get a fill on a small account.
+      # --- Core Strategy Params ---
+      order_value: 20               # Start with a very small order value for testing ($20)
+      base_spread_bps: 30           # Use a wider spread for safety during testing
       inventory_skew_bps: 20
+      refresh_frequency_ms: 15000   # Refresh slowly (every 15s) during the first test
+      
+      # --- Teammate's New Params ---
+      max_orders_per_side: 1        # Place only one buy and one sell order at a time
+      leverage: 10                  # Set leverage on Paradex to 10x for this market
 
-      # Slower refresh to reduce over-trading
-      refresh_frequency_ms: 5000
-
-      # Only reprice if new quote differs by this threshold (in bps)
-      reprice_threshold_bps: 5
-
-    # Optional hedging configuration (for delta-neutral automation)
+    # --- Hedging Configuration for Paradex <-> Lighter ---
     hedge:
       enabled: true
-      exchange: "hyperliquid"    # currently supports 'hyperliquid'
+      exchange: "lighter"             # CRITICAL: This enables the new Lighter integration
       symbol_map:
-        ETH-USD-PERP: "ETH"      # example mapping for Hyperliquid (ETH-USD-PERP -> ETH)
-      mode: "market"             # or "limit"
-      slippage_bps: 10
+        # Mapping Paradex symbol to the Lighter symbol format (e.g., 'DOGE')
+        DOGE-USD-PERP: "DOGE"
+      mode: "market"                  # Use market orders for instant hedging
+      slippage_bps: 50                # Allow 0.5% slippage for market orders

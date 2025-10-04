@@ -155,13 +155,22 @@ def load_env_vars() -> Dict[str, str]:
         
     load_dotenv(dotenv_path=dotenv_path)
     
+    # Paradex
     paradex_env = os.getenv("PARADEX_ENV")
     paradex_ws_url = os.getenv("PARADEX_WS_URL", "wss://ws.api.prod.paradex.trade/v1")
+    
+    # Hyperliquid
     hyperliquid_private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY", "")
     hyperliquid_public_address = os.getenv("HYPERLIQUID_PUBLIC_ADDRESS", "")
     hyperliquid_rest_url = os.getenv("HYPERLIQUID_REST_URL", "https://api.hyperliquid.xyz")
     hyperliquid_ws_url = os.getenv("HYPERLIQUID_WS_URL", "")
     hyperliquid_order_endpoint = os.getenv("HYPERLIQUID_ORDER_ENDPOINT", "/exchange")
+
+    # Lighter (NEW)
+    lighter_private_key = os.getenv("LIGHTER_PRIVATE_KEY", "")
+    lighter_public_address = os.getenv("LIGHTER_PUBLIC_ADDRESS", "")
+    lighter_rest_url = os.getenv("LIGHTER_REST_URL", "https://mainnet.zklighter.elliot.ai")
+    lighter_is_testnet = os.getenv("LIGHTER_IS_TESTNET", "false")
     
     if not paradex_env:
         raise ConfigError(
@@ -180,4 +189,8 @@ def load_env_vars() -> Dict[str, str]:
         "HYPERLIQUID_REST_URL": hyperliquid_rest_url,
         "HYPERLIQUID_WS_URL": hyperliquid_ws_url,
         "HYPERLIQUID_ORDER_ENDPOINT": hyperliquid_order_endpoint,
+        "LIGHTER_PRIVATE_KEY": lighter_private_key,
+        "LIGHTER_PUBLIC_ADDRESS": lighter_public_address,
+        "LIGHTER_REST_URL": lighter_rest_url,
+        "LIGHTER_IS_TESTNET": lighter_is_testnet,
     }
