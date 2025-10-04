@@ -17,8 +17,8 @@ tasks:
       # A strong skew helps manage risk quickly if you get a fill on a small account.
       inventory_skew_bps: 20
 
-      # Slower refresh to reduce over-trading
-      refresh_frequency_ms: 5000
+      # 30-second refresh interval to avoid POST_ONLY_WOULD_CROSS
+      refresh_frequency_ms: 30000
 
       # Only reprice if new quote differs by this threshold (in bps)
       reprice_threshold_bps: 5

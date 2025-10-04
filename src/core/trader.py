@@ -597,10 +597,33 @@ class Trader:
             self.logger.info(f"⏭️  Hedge difference too small: {hedge_difference:.6f} ETH")
             return
         
-        # If Paradex position is 0, reset Hyperliquid position to 0 as well
+        # If Paradex position is 0, close the Hyperliquid position
         if abs(self._paradex_position) < 0.001:
-            self.logger.info(f"🔄 Resetting positions: Paradex={self._paradex_position:.4f}, Hyperliquid={self._hyperliquid_position:.4f}")
-            self._hyperliquid_position = 0.0
+            if abs(self._hyperliquid_position) > 0.001:
+                # Need to close the Hyperliquid position
+                close_side = "BUY" if self._hyperliquid_position < 0 else "SELL"
+                close_size = abs(self._hyperliquid_position)
+                
+                self.logger.info(f"🔄 Closing Hyperliquid position: {close_side} {close_size:.4f} ETH")
+                
+                try:
+                    # Place closing hedge order
+                    paradex_side = "SELL" if close_side == "BUY" else "BUY"
+                    await self.hedger.on_paradex_fill(
+                        market=self.market_symbol,
+                        side=paradex_side,
+                        size=close_size,
+                        price=None,  # Market order
+                        client_id=f"hedge_close_{int(time.time())}",
+                    )
+                    
+                    self.logger.info(f"✅ Hyperliquid position closed: {close_side} {close_size:.4f} ETH")
+                    self._hyperliquid_position = 0.0
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to close Hyperliquid position: {e}")
+            else:
+                self.logger.info(f"🔄 Positions already flat: Paradex={self._paradex_position:.4f}, Hyperliquid={self._hyperliquid_position:.4f}")
             return
         
         # Determine hedge side and size

@@ -129,8 +129,38 @@ class VampMM(BaseStrategy):
         adjusted_mid_price = vamp_price * (1 - skew_multiplier)
         half_spread = vamp_price * (base_spread_multiplier / 2.0)
         
+        # Ensure minimum spread to avoid POST_ONLY_WOULD_CROSS
+        min_spread_bps = 5  # 5 bps minimum spread
+        min_half_spread = vamp_price * (min_spread_bps / 10000.0) / 2.0
+        half_spread = max(half_spread, min_half_spread)
+        
         bid_price = round(adjusted_mid_price - half_spread, 2)
         ask_price = round(adjusted_mid_price + half_spread, 2)
+        
+        # Safety check: Ensure prices don't cross existing orders
+        best_bid_data = lob_data.best_bid()
+        best_ask_data = lob_data.best_ask()
+        
+        best_bid_price = best_bid_data[0] if best_bid_data else None
+        best_ask_price = best_ask_data[0] if best_ask_data else None
+        
+        if best_bid_price and bid_price >= best_bid_price:
+            # Move bid price below best bid
+            bid_price = round(best_bid_price - 0.01, 2)
+            self.logger.warning(f"⚠️  Bid price adjusted to avoid crossing: ${bid_price:.2f}")
+        
+        if best_ask_price and ask_price <= best_ask_price:
+            # Move ask price above best ask
+            ask_price = round(best_ask_price + 0.01, 2)
+            self.logger.warning(f"⚠️  Ask price adjusted to avoid crossing: ${ask_price:.2f}")
+        
+        # Debug logging
+        self.logger.info(f"🔍 PRICE DEBUG:")
+        self.logger.info(f"   VAMP Price: ${vamp_price:.2f}")
+        self.logger.info(f"   Adjusted Mid: ${adjusted_mid_price:.2f}")
+        self.logger.info(f"   Half Spread: ${half_spread:.2f} (min: ${min_half_spread:.2f})")
+        self.logger.info(f"   Best Bid: ${best_bid_price:.2f}, Best Ask: ${best_ask_price:.2f}")
+        self.logger.info(f"   Final Bid: ${bid_price:.2f}, Final Ask: ${ask_price:.2f}")
         
         # --- 5. Create Order Lists ---
         buy_orders = []
