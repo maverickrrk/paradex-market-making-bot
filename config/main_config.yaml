@@ -14,9 +14,9 @@ tasks:
       order_value: 20               # Start with a very small order value for testing ($20)
       base_spread_bps: 30           # Use a wider spread for safety during testing
       inventory_skew_bps: 20
-      refresh_frequency_ms: 15000   # Refresh slowly (every 15s) during the first test
       
-      # --- Teammate's New Params ---
+      # --- Teammate's New Params (MERGED) ---
+      refresh_frequency_ms: 30000   # Slower 30-second refresh to avoid errors
       max_orders_per_side: 1        # Place only one buy and one sell order at a time
       leverage: 10                  # Set leverage on Paradex to 10x for this market
 
