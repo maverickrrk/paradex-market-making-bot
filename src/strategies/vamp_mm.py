@@ -79,13 +79,35 @@ class VampMM(BaseStrategy):
         # If we have positive ETH position, we can sell it
         available_eth_value = max(0, current_position * vamp_price)  # Available ETH value for selling
         
-        # --- 3. Place Only ONE Order Per Side (Simplified) ---
-        # Only place one order per side to avoid multiple orders
-        max_buy_orders = 1 if available_usdc >= reference_notional else 0
-        max_sell_orders = 1 if available_eth_value >= reference_notional else 0
+        # --- 3. Position-Based Order Management ---
+        # Only place orders that help close the current position
+        max_buy_orders = 0
+        max_sell_orders = 0
+        
+        # If we have a long position, only place SELL orders to close it
+        if current_position > 0.001:  # Long position
+            # For long positions, we can always sell the position size
+            # The position size (in ETH) should be sufficient for selling
+            max_sell_orders = 1
+            self.logger.info(f"📈 Long position detected ({current_position:.4f} ETH) - placing SELL orders only")
+            self.logger.info(f"🔍 DEBUG: Position size: {current_position:.4f} ETH, Available ETH value: ${available_eth_value:.2f}")
+        
+        # If we have a short position, only place BUY orders to close it
+        elif current_position < -0.001:  # Short position
+            if available_usdc >= reference_notional:
+                max_buy_orders = 1
+                self.logger.info(f"📉 Short position detected ({current_position:.4f} ETH) - placing BUY orders only")
+            else:
+                self.logger.warning(f"⚠️  Short position but insufficient USDC for buying")
+        
+        # If we're flat (no position), place both BUY and SELL orders
+        else:
+            max_buy_orders = 1 if available_usdc >= reference_notional else 0
+            max_sell_orders = 1 if available_eth_value >= reference_notional else 0
+            self.logger.info(f"⚖️  Flat position - placing both BUY and SELL orders")
         
         # For testing purposes, if we have no balance, create at least one order of each type
-        if account_balance == 0.0:
+        if account_balance == 0.0 and current_position == 0.0:
             self.logger.warning("⚠️  Zero account balance detected. Creating test orders for demonstration.")
             max_buy_orders = 1
             max_sell_orders = 1

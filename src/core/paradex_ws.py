@@ -75,18 +75,14 @@ class ParadexWSFills:
                         auth_resp = await asyncio.wait_for(ws.recv(), timeout=5.0)
                         self.logger.debug(f"WS auth response: {auth_resp}")
 
-                    # Subscribe to private orders/fills stream (channel naming subject to API)
-                    # Try multiple known patterns defensively
+                    # Subscribe to fills channel as per Paradex documentation
+                    # https://docs.paradex.trade/ws/web-socket-channels/fills/fills
+                    # The correct format is just "fills" channel, no market_symbol parameter
                     subs = [
-                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "user.fills"}, "id": 2},
-                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "user.orders"}, "id": 3},
-                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "user.trades"}, "id": 4},
-                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "fills"}, "id": 5},
-                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "orders"}, "id": 6},
-                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "trades"}, "id": 7},
-                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "user_fills"}, "id": 8},
-                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "user_orders"}, "id": 9},
-                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "user_trades"}, "id": 10},
+                        # Subscribe to fills channel (no market_symbol parameter needed)
+                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "fills"}, "id": 1},
+                        # Also try orders channel
+                        {"jsonrpc": "2.0", "method": "subscribe", "params": {"channel": "orders"}, "id": 2},
                     ]
                     for msg in subs:
                         try:
@@ -105,6 +101,11 @@ class ParadexWSFills:
                     while not self._stop.is_set():
                         raw = await ws.recv()
                         data = json.loads(raw)
+                        
+                        # DEBUG: Log only fill-related messages
+                        if "fills" in str(data).lower() or "order" in str(data).lower():
+                            self.logger.info(f"🔍 WS Fill Message: {data}")
+                        
                         # Heuristic parsing for fills
                         params = data.get("params") if isinstance(data, dict) else None
                         if not params:
@@ -113,11 +114,12 @@ class ParadexWSFills:
                         if not isinstance(event, dict):
                             continue
 
-                        # Normalize fill-like events
-                        side = (event.get("side") or event.get("order_side") or "").upper()
-                        filled = event.get("filled") or event.get("filled_size") or event.get("exec_size")
-                        price = event.get("price") or event.get("exec_price") or event.get("limit_price")
-                        order_id = event.get("id") or event.get("order_id")
+                        # Parse fills according to Paradex WebSocket format
+                        # https://docs.paradex.trade/ws/web-socket-channels/fills/fills
+                        side = event.get("side", "").upper()
+                        filled = event.get("size", 0)  # Paradex uses "size" for filled amount
+                        price = event.get("price", 0)
+                        order_id = event.get("order_id", "")
 
                         try:
                             if side and filled:
